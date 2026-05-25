@@ -1,5 +1,6 @@
 import { type DiffOptions, type JsonObject, type JsonPath, type JsonValue, type ObjectKey, type Patch } from '@shapeshift-labs/frontier';
-export type MutationPath = string | JsonPath;
+import { type QueryCondition, type QueryOperator, type QueryPath, type QuerySchemaInput, type QueryTableSchema } from '@shapeshift-labs/frontier-query';
+export type MutationPath = QueryPath;
 export interface MutationStateEngine {
     get(): JsonValue;
     commitPatch(patch: Patch): unknown;
@@ -40,27 +41,9 @@ export interface MutationCrdtTransaction {
     list(path: JsonPath): MutationCrdtListHandle;
     map(path: JsonPath): MutationCrdtMapHandle;
 }
-export type SelectorOperator = '==' | 'eq' | '!=' | 'neq' | '>' | 'gt' | '>=' | 'gte' | '<' | 'lt' | '<=' | 'lte' | 'in' | 'exists';
+export type SelectorOperator = QueryOperator;
 export type SelectorOrderDirection = 'asc' | 'desc';
-export type SelectorCondition = {
-    field: MutationPath;
-    op?: SelectorOperator;
-    value?: JsonValue | JsonValue[];
-    eq?: JsonValue;
-    neq?: JsonValue;
-    gt?: number;
-    gte?: number;
-    lt?: number;
-    lte?: number;
-    in?: JsonValue[];
-    exists?: boolean;
-} | {
-    and: SelectorCondition[];
-} | {
-    or: SelectorCondition[];
-} | {
-    not: SelectorCondition;
-};
+export type SelectorCondition = QueryCondition;
 export type MutationOperationKind = 'set' | 'unset' | 'remove' | 'ensure' | 'upsert' | 'assign' | 'increment' | 'decrement' | 'multiply' | 'min' | 'max' | 'clamp' | 'toggle' | 'append' | 'prepend' | 'splice' | 'insert' | 'removeAt' | 'moveItem' | 'addToSet' | 'pull' | 'removeWhere' | 'appendText' | 'spliceText' | 'insertText' | 'deleteText' | 'replaceText' | 'formatText' | 'move' | 'copy' | 'rename' | 'test' | 'compareAndSet';
 export type MutationValueFactory = (current: JsonValue | undefined, path: JsonPath) => JsonValue;
 export type MutationArrayPredicate = (value: JsonValue, index: number, array: readonly JsonValue[]) => boolean;
@@ -87,28 +70,14 @@ export interface SelectorPlan {
     project?: JsonPath[];
     name?: string;
 }
-export interface MutationTableSchema {
-    /** Path to an array table or object-map table, without the wildcard segment. */
-    path: MutationPath;
-    /** Stable row identity field. Used as default keyBy/indexBy for selectors over this table. */
-    key?: MutationPath;
-    /** Trusted claim that row objects have a stable field layout. */
-    stableRowShape?: boolean;
-    /** Fields known to contain numbers. */
-    numericFields?: MutationPath[];
-    /** Fields known to contain strings. */
-    textFields?: MutationPath[];
-    /** Fields known to contain arrays/lists. */
-    listFields?: MutationPath[];
-    /** Fields expected to participate in selector predicates for this table. */
-    selectorFields?: MutationPath[];
+export interface MutationTableSchema extends QueryTableSchema {
 }
 export interface MutationShapeSchema {
     tables?: MutationTableSchema[];
     /** Alias for table-like entity collections. */
     entities?: MutationTableSchema[];
 }
-export type MutationSchemaInput = MutationShapeSchema | MutationTableSchema[];
+export type MutationSchemaInput = QuerySchemaInput;
 export interface MutationOperation {
     kind: MutationOperationKind;
     path: JsonPath;

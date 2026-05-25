@@ -2,12 +2,26 @@
 
 Explicit mutation and selector plans for Frontier.
 
-Repository: [siliconjungle/-shapeshift-labs-frontier-mutation](https://github.com/siliconjungle/-shapeshift-labs-frontier-mutation)
+- npm: [`@shapeshift-labs/frontier-mutation`](https://www.npmjs.com/package/@shapeshift-labs/frontier-mutation)
+- source: [`siliconjungle/-shapeshift-labs-frontier-mutation`](https://github.com/siliconjungle/-shapeshift-labs-frontier-mutation)
+- license: MIT
 
-Built on the core JSON diff/apply package: [`@shapeshift-labs/frontier`](https://github.com/siliconjungle/-shapeshift-labs-frontier).
+Built on the core JSON diff/apply package: [`@shapeshift-labs/frontier`](https://www.npmjs.com/package/@shapeshift-labs/frontier).
+
+## Related Packages
+
+- [`@shapeshift-labs/frontier`](https://www.npmjs.com/package/@shapeshift-labs/frontier): core JSON diff/apply primitives used by compiled mutation patches.
+- [`@shapeshift-labs/frontier-query`](https://www.npmjs.com/package/@shapeshift-labs/frontier-query): shared query-key, selector path, condition, identity, and table-schema primitives used by mutation selectors.
+- [`@shapeshift-labs/frontier-codec`](https://www.npmjs.com/package/@shapeshift-labs/frontier-codec): optional patch serialization and transport layer for compiled patches.
+
+Package source repositories:
+
+- [`siliconjungle/-shapeshift-labs-frontier`](https://github.com/siliconjungle/-shapeshift-labs-frontier)
+- [`siliconjungle/-shapeshift-labs-frontier-query`](https://github.com/siliconjungle/-shapeshift-labs-frontier-query)
+- [`siliconjungle/-shapeshift-labs-frontier-codec`](https://github.com/siliconjungle/-shapeshift-labs-frontier-codec)
 
 ```sh
-npm install @shapeshift-labs/frontier @shapeshift-labs/frontier-mutation
+npm install @shapeshift-labs/frontier @shapeshift-labs/frontier-query @shapeshift-labs/frontier-mutation
 ```
 
 `@shapeshift-labs/frontier-mutation` keeps intent above Frontier's concrete patch layer. A mutation plan can express operations such as increments, toggles, text/list appends, and selector-targeted row updates, then compile them into ordinary Frontier patches.
@@ -31,26 +45,6 @@ const result = plan.compilePatch(state);
 The compiled patch contains concrete paths, indexes, and values. Queries are compile-time selectors, not replay-time patch semantics.
 
 The public surface is intentionally small: build selectors, build a mutation plan, then compile or commit it. Planner choices, compiler passes, and CRDT lowering stay behind options and result metadata.
-
-## Performance
-
-Frontier Mutation was measured from this package with `npm run bench` on Node v26.1.0, darwin arm64. Timings are median microseconds per operation across 9 warmed rounds; p95 is shown to make noise visible. Patch bytes are `JSON.stringify(patch)` bytes because this package emits Frontier patches and does not own binary transport encoding.
-
-| Fixture | Matches | Strategy | Patch | Bytes | Compile median | Compile p95 | Apply median |
-| --- | ---: | --- | ---: | ---: | ---: | ---: | ---: |
-| Selector increment, 1% sparse 10k-row table | 100 | row-field | 1 op | 1007 B | 2.74 ms | 3.40 ms | 4.40 us |
-| Selector increment, indexed id IN | 100 | row-field | 1 op | 1003 B | 1.68 ms | 1.77 ms | 3.81 us |
-| Selector increment, 10% 10k-row table | 1,000 | row-field | 1 op | 9.6 KiB | 2.86 ms | 2.92 ms | 17.17 us |
-| Repeated arithmetic fold, 1000x | 0 | direct | 1 op | 20 B | 0.49 us | 0.60 us | 0.04 us |
-| Repeated text append fold, 1000x | 0 | direct | 1 op | 1021 B | 0.63 us | 0.78 us | 0.08 us |
-
-These are Frontier-only package measurements, not a competitor comparison. Hardware, Node version, selector shape, and table size will affect absolute timings.
-
-Reproduce the package-local benchmark with:
-
-```sh
-npm run bench
-```
 
 ## API Overview
 
@@ -78,7 +72,7 @@ Core exports:
 - `commitMutation(stateEngine, plan, options?)` compiles and commits to any state engine with `get()` and `commitPatch()`.
 - `commitCrdtMutation(doc, plan, options?)` lowers safe intent to native CRDT operations when the document supports them.
 
-The package has a peer dependency on the core package only. State and CRDT integration use small structural interfaces, so the mutation package does not force the full state or CRDT packages into the core import path.
+The package has peer dependencies on the core package and `@shapeshift-labs/frontier-query`. Selector conditions, path normalization, equality hints, and table schema hints come from that dependency-free companion package. State and CRDT integration use small structural interfaces, so the mutation package does not force the full state or CRDT packages into the core import path.
 
 ## Selectors
 
@@ -160,7 +154,7 @@ result.decisions;
 
 Strategies can be forced for diagnostics or benchmarking with `direct`, `row-field`, `dirty-diff`, or `materialize-diff`.
 
-Schema hints are trusted table/entity contracts. The key field becomes the default selector `keyBy`/`indexBy`, stable row shape lets the planner reuse selector matches across adjacent mutations that do not touch declared selector fields, and known numeric/text/list fields are reported in planner decisions for debugging and downstream specialization.
+Schema hints are trusted table/entity contracts and use the same shape as the `@shapeshift-labs/frontier-query` primitive layer. The key field becomes the default selector `keyBy`/`indexBy`, stable row shape lets the planner reuse selector matches across adjacent mutations that do not touch declared selector fields, and known numeric/text/list fields are reported in planner decisions for debugging and downstream specialization.
 
 If you already use `createDiffEngine()` with schema, profile, or adaptive settings, pass it as `planner.diffEngine`. The planner will use that engine when it chooses a dirty diff or materialize-and-diff path.
 
@@ -175,6 +169,24 @@ Plan methods include:
 - text: `appendText`, `insertText`, `deleteText`, `replaceText`, `spliceText`, `formatText`
 - guards: `test`, `compareAndSet`
 - control: `forEach`, `where`, `clearSelector`, `transaction`, `repeat`, `explain`
+
+The detailed cross-planner contract lives in [`docs/mutation-semantics.md`](../../docs/mutation-semantics.md).
+
+### Semantics Matrix
+
+| Family | Methods | Patch semantics | CRDT semantics | Stability |
+| --- | --- | --- | --- | --- |
+| Replace/merge | `set`, `assign`, `upsert` | Emits `OP_SET` or `OP_ASSIGN` when direct. `upsert` merges object targets and replaces non-objects. | Map-field native when conflict-preserving assignment is safe, otherwise materialized set. | Known |
+| Delete | `unset`, `remove` | Object fields emit `OP_REMOVE`; array indexes emit `OP_ARRAY_SPLICE`. Root removal is rejected. | Native CRDT tombstone when possible, otherwise materialized delete. | Known |
+| Ensure/guards | `ensure`, `test`, `compareAndSet` | `ensure` is no-op when present. `test` emits no patch. `compareAndSet` throws on mismatch before emitting. | Same compile-time guard behavior; matching writes materialize or lower normally. | Known |
+| Numbers | `increment`, `decrement`, `multiply`, `min`, `max`, `clamp` | Arithmetic compacts to `OP_SET`; adjacent increments/decrements fold. | Increments/decrements can use native counters; other numeric transforms materialize. | Known |
+| Lists | `append`, `prepend`, `splice`, `insert`, `removeAt`, `moveItem` | Uses `OP_APPEND`, `OP_ARRAY_SPLICE`, or `OP_ARRAY_MOVE` when direct. `moveItem` target is the post-removal index. | Native list insert/delete/move when the path has list backing; otherwise materialized set. | Known |
+| Set-like lists | `addToSet`, `pull`, `removeWhere` | `addToSet` can append new values; `pull` and `removeWhere` materialize the filtered list. | Materialized unless expressible as native list edits later. `removeWhere` is compile-time only. | Known compile-time |
+| Text | `appendText`, `insertText`, `deleteText`, `replaceText`, `spliceText` | Uses `OP_STRING_SPLICE` for string targets; non-strings become materialized strings. | Native text insert/splice when the path has text backing and code-unit safety holds. | Known |
+| Rich text | `formatText` | Materializes a `{ text, spans }`-style value with appended span metadata. | Materialized today; richer CRDT-richtext lowering is a future boundary. | Known JSON shape |
+| Path moves | `copy`, `move`, `rename` | Emits target `OP_SET` plus source remove, or `OP_ARRAY_MOVE` for same-array moves. Dirty diff tracks source and target paths. | Materialized through set/delete today. | Known |
+| Selectors | `where`, `orderBy`, `limit`, `first`, `project`, `keyBy`, `indexBy` | Resolved at compile time; projected fields appear in `result.matches`. | Same compile-time row resolution before CRDT lowering. | Known |
+| Diagnostics | `transaction`, `explain` | Transaction metadata is attached to operation metadata; `explain()` returns operations, patch count, matches, decisions. | CRDT decision metadata includes operation and transaction summaries. | Known diagnostic |
 
 Examples:
 
@@ -254,3 +266,32 @@ CRDT commits lower intent to native operations when that is semantically safe:
 `crdtAssignmentPolicy` controls assignment lowering. `preserve-conflicts` keeps object updates at field granularity so concurrent same-field register conflicts remain inspectable and resolvable. `last-write-wins` and `materialize` keep the older whole-value materialization behavior for assignment-shaped operations.
 
 `crdtMetadata` is passed through Frontier's durable CRDT update metadata. The returned `crdtDecisions` list also includes per-operation debug metadata with the chosen strategy, reason, path, repeat count, and operation size summary.
+
+## Benchmarks
+
+Run the package-local benchmark:
+
+```sh
+npm run bench
+```
+
+Latest local package-gate run on Node v26.1.0, darwin arm64, 3 rounds:
+
+| Fixture | Compile median | Apply median |
+| --- | ---: | ---: |
+| 1% sparse selector update | 2.44 ms | 3.37 us |
+| Indexed id `in` selector update | 1.72 ms | 4.36 us |
+| 10% dense selector update | 4.42 ms | 19.46 us |
+| Repeated arithmetic fold, 1000x | 0.85 us | 0.07 us |
+| Repeated text append fold, 1000x | 0.68 us | 0.19 us |
+
+These are Frontier-only package measurements, not competitor comparisons.
+
+## Verification
+
+```sh
+npm test
+npm run fuzz
+npm run bench
+npm run pack:dry
+```

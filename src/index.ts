@@ -11,7 +11,6 @@ import {
   cloneJson,
   diff,
   getPath,
-  parsePointer,
   type DiffOptions,
   type JsonObject,
   type JsonPath,
@@ -21,8 +20,26 @@ import {
   type PatchOperation,
   type PathSegment
 } from '@shapeshift-labs/frontier';
+import {
+  cloneQueryCondition,
+  collectQueryConditionFields,
+  isSpecialQueryPath,
+  matchesQueryConditions,
+  normalizeQueryPath,
+  normalizeQuerySchema,
+  readQueryCondition,
+  readQueryConditionEqualityHint,
+  readQueryConditionValue,
+  type NormalizedQuerySchema,
+  type NormalizedQueryTableSchema,
+  type QueryCondition,
+  type QueryOperator,
+  type QueryPath,
+  type QuerySchemaInput,
+  type QueryTableSchema
+} from '@shapeshift-labs/frontier-query';
 
-export type MutationPath = string | JsonPath;
+export type MutationPath = QueryPath;
 
 export interface MutationStateEngine {
   get(): JsonValue;
@@ -66,29 +83,11 @@ export interface MutationCrdtTransaction {
   map(path: JsonPath): MutationCrdtMapHandle;
 }
 
-export type SelectorOperator =
-  | '=='
-  | 'eq'
-  | '!='
-  | 'neq'
-  | '>'
-  | 'gt'
-  | '>='
-  | 'gte'
-  | '<'
-  | 'lt'
-  | '<='
-  | 'lte'
-  | 'in'
-  | 'exists';
+export type SelectorOperator = QueryOperator;
 
 export type SelectorOrderDirection = 'asc' | 'desc';
 
-export type SelectorCondition =
-  | { field: MutationPath; op?: SelectorOperator; value?: JsonValue | JsonValue[]; eq?: JsonValue; neq?: JsonValue; gt?: number; gte?: number; lt?: number; lte?: number; in?: JsonValue[]; exists?: boolean }
-  | { and: SelectorCondition[] }
-  | { or: SelectorCondition[] }
-  | { not: SelectorCondition };
+export type SelectorCondition = QueryCondition;
 
 export type MutationOperationKind =
   | 'set'
@@ -151,22 +150,7 @@ export interface SelectorPlan {
   name?: string;
 }
 
-export interface MutationTableSchema {
-  /** Path to an array table or object-map table, without the wildcard segment. */
-  path: MutationPath;
-  /** Stable row identity field. Used as default keyBy/indexBy for selectors over this table. */
-  key?: MutationPath;
-  /** Trusted claim that row objects have a stable field layout. */
-  stableRowShape?: boolean;
-  /** Fields known to contain numbers. */
-  numericFields?: MutationPath[];
-  /** Fields known to contain strings. */
-  textFields?: MutationPath[];
-  /** Fields known to contain arrays/lists. */
-  listFields?: MutationPath[];
-  /** Fields expected to participate in selector predicates for this table. */
-  selectorFields?: MutationPath[];
-}
+export interface MutationTableSchema extends QueryTableSchema {}
 
 export interface MutationShapeSchema {
   tables?: MutationTableSchema[];
@@ -174,7 +158,7 @@ export interface MutationShapeSchema {
   entities?: MutationTableSchema[];
 }
 
-export type MutationSchemaInput = MutationShapeSchema | MutationTableSchema[];
+export type MutationSchemaInput = QuerySchemaInput;
 
 export interface MutationOperation {
   kind: MutationOperationKind;
@@ -385,19 +369,8 @@ type NativeCrdtSequenceBackings = {
   text: JsonPath[];
 };
 
-type NormalizedMutationTableSchema = {
-  path: JsonPath;
-  key?: JsonPath;
-  stableRowShape: boolean;
-  numericFields: JsonPath[];
-  textFields: JsonPath[];
-  listFields: JsonPath[];
-  selectorFields: JsonPath[];
-};
-
-type NormalizedMutationSchema = {
-  tables: NormalizedMutationTableSchema[];
-};
+type NormalizedMutationTableSchema = NormalizedQueryTableSchema;
+type NormalizedMutationSchema = NormalizedQuerySchema;
 
 type MutationRuntimeContext = {
   schema: NormalizedMutationSchema;
@@ -1150,31 +1123,7 @@ function normalizeCrdtMetadata(metadata: JsonObject | undefined): JsonObject | u
 }
 
 function normalizeMutationSchema(schema: MutationSchemaInput | undefined): NormalizedMutationSchema {
-  if (schema === undefined) return { tables: [] };
-  const entries = Array.isArray(schema)
-    ? schema
-    : (schema.tables || []).concat(schema.entities || []);
-  const tables: NormalizedMutationTableSchema[] = [];
-  for (const table of entries) {
-    const normalized: NormalizedMutationTableSchema = {
-      path: normalizePath(table.path, 'mutation schema table path'),
-      key: table.key === undefined ? undefined : normalizePath(table.key, 'mutation schema key'),
-      stableRowShape: table.stableRowShape !== false,
-      numericFields: normalizeSchemaFields(table.numericFields, 'mutation schema numericFields'),
-      textFields: normalizeSchemaFields(table.textFields, 'mutation schema textFields'),
-      listFields: normalizeSchemaFields(table.listFields, 'mutation schema listFields'),
-      selectorFields: normalizeSchemaFields(table.selectorFields, 'mutation schema selectorFields')
-    };
-    if (normalized.path.length === 0) throw new TypeError('mutation schema table path must not be root');
-    tables.push(normalized);
-  }
-  return { tables };
-}
-
-function normalizeSchemaFields(fields: MutationPath[] | undefined, label: string): JsonPath[] {
-  if (fields === undefined) return [];
-  if (!Array.isArray(fields)) throw new TypeError(label + ' must be an array');
-  return fields.map((field) => normalizePath(field, label));
+  return normalizeQuerySchema(schema, 'mutation schema');
 }
 
 function normalizeSelectivityThreshold(value: number | undefined): number {
@@ -1234,7 +1183,7 @@ function chooseSelectorStrategy(
 
 function chooseAbsoluteStrategy(planner: NormalizedPlannerOptions, op: MutationOperation): StrategyChoice {
   if (planner.strategy === 'dirty-diff') {
-    return { strategy: 'dirty-diff', reason: 'forced-dirty-path-diff', dirtyPaths: [op.path.slice()] };
+    return { strategy: 'dirty-diff', reason: 'forced-dirty-path-diff', dirtyPaths: mutationDirtyPaths([], op.path, op) };
   }
   if (planner.strategy === 'materialize-diff') {
     return { strategy: 'materialize-diff', reason: 'forced-materialize-diff' };
@@ -1302,7 +1251,10 @@ function makeDirtyRowsFrontier(context: SelectorContext, op: MutationOperation):
 
 function makeSelectorDirtyPaths(context: SelectorContext, op: MutationOperation): JsonPath[] {
   const paths: JsonPath[] = [];
-  for (const match of context.matches) paths.push(match.path.concat(op.path));
+  for (const match of context.matches) {
+    const absolutePath = match.path.concat(op.path);
+    for (const dirtyPath of mutationDirtyPaths(match.path, absolutePath, op)) paths.push(dirtyPath);
+  }
   return paths;
 }
 
@@ -1753,19 +1705,7 @@ function selectorMutationPreservesMembership(selector: SelectorPlan, path: JsonP
 }
 
 function collectSelectorConditionFields(conditions: readonly SelectorCondition[], out: JsonPath[]): void {
-  for (const condition of conditions) collectConditionFields(condition, out);
-}
-
-function collectConditionFields(condition: SelectorCondition, out: JsonPath[]): void {
-  if ('and' in condition) {
-    collectSelectorConditionFields(condition.and, out);
-  } else if ('or' in condition) {
-    collectSelectorConditionFields(condition.or, out);
-  } else if ('not' in condition) {
-    collectConditionFields(condition.not, out);
-  } else {
-    out.push(normalizePath(condition.field, 'condition field'));
-  }
+  collectQueryConditionFields(conditions, out);
 }
 
 function overlappingMutationPaths(left: JsonPath, right: JsonPath): boolean {
@@ -2542,8 +2482,7 @@ function moveArrayItems(array: JsonValue[], from: number, to: number, count: num
   if (count === 0 || from === to || from >= array.length) return;
   const deleteCount = Math.min(count, array.length - from);
   const values = array.splice(from, deleteCount);
-  const target = from < to ? Math.max(0, to - deleteCount) : to;
-  array.splice(boundedIndex(target, array.length), 0, ...values);
+  array.splice(boundedIndex(to, array.length), 0, ...values);
 }
 
 function textStartForOperation(current: JsonValue | undefined, op: MutationOperation): number {
@@ -3004,37 +2943,7 @@ function readObjectKeyHint(
 }
 
 function readSelectorEqualityHint(conditions: readonly SelectorCondition[], field: JsonPath): ObjectKey[] | undefined {
-  let values: ObjectKey[] | undefined;
-  for (const condition of conditions) {
-    const next = readConditionEqualityHint(condition, field);
-    if (next === undefined) continue;
-    values = values === undefined ? next : intersectObjectKeys(values, next);
-  }
-  return values;
-}
-
-function readConditionEqualityHint(condition: SelectorCondition, field: JsonPath): ObjectKey[] | undefined {
-  if ('and' in condition) return readSelectorEqualityHint(condition.and, field);
-  if ('or' in condition) {
-    let values: ObjectKey[] = [];
-    for (const item of condition.or) {
-      const next = readConditionEqualityHint(item, field);
-      if (next === undefined) return undefined;
-      values = values.concat(next);
-    }
-    return uniqueObjectKeys(values);
-  }
-  if ('not' in condition) return undefined;
-  if (!samePath(normalizePath(condition.field, 'condition field'), field)) return undefined;
-  const op = normalizeOperator(condition);
-  if (op !== 'eq' && op !== 'in') return undefined;
-  const expected = readExpected(condition, op);
-  const values = op === 'in' && Array.isArray(expected) ? expected : [expected];
-  const keys: ObjectKey[] = [];
-  for (const value of values) {
-    if (typeof value === 'string' || typeof value === 'number') keys.push(value);
-  }
-  return keys.length === 0 ? undefined : uniqueObjectKeys(keys);
+  return readQueryConditionEqualityHint(conditions, field);
 }
 
 function readSelectorMatchKey(
@@ -3056,10 +2965,7 @@ function readFallbackSelectorKey(path: JsonPath): ObjectKey {
 }
 
 function matchesSelector(value: JsonValue | undefined, conditions: SelectorCondition[], meta?: SelectorWalkMeta): boolean {
-  for (const condition of conditions) {
-    if (!evaluateCondition(value, condition, meta)) return false;
-  }
-  return true;
+  return matchesQueryConditions(value, conditions, meta);
 }
 
 function applySelectorOrderingAndLimit(matches: RowMatch[], selector: SelectorPlan): void {
@@ -3096,38 +3002,12 @@ function makeSelectorMatchOut(match: RowMatch, selector: SelectorPlan): Mutation
   return out;
 }
 
-function evaluateCondition(value: JsonValue | undefined, condition: SelectorCondition, meta?: SelectorWalkMeta): boolean {
-  if ('and' in condition) return condition.and.every((item) => evaluateCondition(value, item, meta));
-  if ('or' in condition) return condition.or.some((item) => evaluateCondition(value, item, meta));
-  if ('not' in condition) return !evaluateCondition(value, condition.not, meta);
-  const actual = readSelectorConditionValue(value, normalizePath(condition.field, 'condition field'), meta);
-  const op = normalizeOperator(condition);
-  const expected = readExpected(condition, op);
-  if (op === 'exists') return expected === false ? actual === undefined : actual !== undefined;
-  if (op === 'eq') return Object.is(actual, expected);
-  if (op === 'neq') return !Object.is(actual, expected);
-  if (op === 'in') return Array.isArray(expected) && expected.some((item) => Object.is(actual, item));
-  if (typeof actual !== 'number' || typeof expected !== 'number') return false;
-  if (op === 'gt') return actual > expected;
-  if (op === 'gte') return actual >= expected;
-  if (op === 'lt') return actual < expected;
-  if (op === 'lte') return actual <= expected;
-  return false;
-}
-
 function readSelectorConditionValue(value: JsonValue | undefined, field: JsonPath, meta?: SelectorWalkMeta): JsonValue | undefined {
-  if (field.length === 1 && field[0] === '$key') return meta?.key as JsonValue | undefined;
-  if (field.length === 1 && field[0] === '$index') return meta?.rowIndex as JsonValue | undefined;
-  if (field.length === 1 && field[0] === '$mapKey') return meta?.mapKey;
-  return readPath(value, field);
+  return readQueryConditionValue(value, field, meta);
 }
 
 function isSpecialSelectorPath(path: JsonPath): boolean {
-  return path.length === 1 && (
-    path[0] === '$key' ||
-    path[0] === '$index' ||
-    path[0] === '$mapKey'
-  );
+  return isSpecialQueryPath(path);
 }
 
 function uniqueNumbers(values: number[]): number[] {
@@ -3146,60 +3026,8 @@ function uniqueStrings(values: string[]): string[] {
   return out;
 }
 
-function uniqueObjectKeys(values: ObjectKey[]): ObjectKey[] {
-  const out: ObjectKey[] = [];
-  for (const value of values) {
-    if (!out.some((existing) => Object.is(existing, value))) out.push(value);
-  }
-  return out;
-}
-
-function intersectObjectKeys(left: ObjectKey[], right: ObjectKey[]): ObjectKey[] {
-  const out: ObjectKey[] = [];
-  for (const value of left) {
-    if (right.some((candidate) => Object.is(candidate, value))) out.push(value);
-  }
-  return uniqueObjectKeys(out);
-}
-
 function readCondition(fieldOrCondition: MutationPath | SelectorCondition, op?: SelectorOperator, value?: JsonValue | JsonValue[]): SelectorCondition {
-  if (typeof fieldOrCondition === 'string' || Array.isArray(fieldOrCondition)) {
-    return { field: fieldOrCondition, op: op || 'eq', value };
-  }
-  return cloneCondition(fieldOrCondition);
-}
-
-function normalizeOperator(condition: Extract<SelectorCondition, { field: MutationPath }>): 'eq' | 'neq' | 'gt' | 'gte' | 'lt' | 'lte' | 'in' | 'exists' {
-  if (condition.eq !== undefined) return 'eq';
-  if (condition.neq !== undefined) return 'neq';
-  if (condition.gt !== undefined) return 'gt';
-  if (condition.gte !== undefined) return 'gte';
-  if (condition.lt !== undefined) return 'lt';
-  if (condition.lte !== undefined) return 'lte';
-  if (condition.in !== undefined) return 'in';
-  if (condition.exists !== undefined) return 'exists';
-  const op = condition.op || 'eq';
-  if (op === '==' || op === 'eq') return 'eq';
-  if (op === '!=' || op === 'neq') return 'neq';
-  if (op === '>' || op === 'gt') return 'gt';
-  if (op === '>=' || op === 'gte') return 'gte';
-  if (op === '<' || op === 'lt') return 'lt';
-  if (op === '<=' || op === 'lte') return 'lte';
-  if (op === 'in') return 'in';
-  if (op === 'exists') return 'exists';
-  throw new TypeError('unsupported selector operator: ' + op);
-}
-
-function readExpected(condition: Extract<SelectorCondition, { field: MutationPath }>, op: string): JsonValue | JsonValue[] | boolean | undefined {
-  if (op === 'eq' && condition.eq !== undefined) return condition.eq;
-  if (op === 'neq' && condition.neq !== undefined) return condition.neq;
-  if (op === 'gt' && condition.gt !== undefined) return condition.gt;
-  if (op === 'gte' && condition.gte !== undefined) return condition.gte;
-  if (op === 'lt' && condition.lt !== undefined) return condition.lt;
-  if (op === 'lte' && condition.lte !== undefined) return condition.lte;
-  if (op === 'in' && condition.in !== undefined) return condition.in;
-  if (op === 'exists' && condition.exists !== undefined) return condition.exists;
-  return condition.value;
+  return readQueryCondition(fieldOrCondition, op, value);
 }
 
 function normalizeOperation(op: MutationOperation): MutationOperation {
@@ -3253,12 +3081,7 @@ function canUseRowFieldAssign(op: MutationOperation): boolean {
 }
 
 function normalizePath(path: MutationPath | undefined, label: string): JsonPath {
-  if (path === undefined) return [];
-  if (Array.isArray(path)) return path.slice();
-  if (typeof path !== 'string') throw new TypeError(label + ' must be a JSON pointer string or path array');
-  if (path.length === 0) return [];
-  if (path[0] === '/') return parsePointer(path);
-  return path.split('.').filter(Boolean);
+  return normalizeQueryPath(path, label);
 }
 
 function normalizeSelectorName(name: string): string {
@@ -3295,10 +3118,7 @@ function cloneSelectorPlan(plan: SelectorPlan): SelectorPlan {
 }
 
 function cloneCondition(condition: SelectorCondition): SelectorCondition {
-  if ('and' in condition) return { and: condition.and.map(cloneCondition) };
-  if ('or' in condition) return { or: condition.or.map(cloneCondition) };
-  if ('not' in condition) return { not: cloneCondition(condition.not) };
-  return { ...condition, field: normalizePath(condition.field, 'condition field'), in: condition.in === undefined ? undefined : condition.in.slice() };
+  return cloneQueryCondition(condition);
 }
 
 function normalizeTransactionInfo(options: MutationTransactionOptions): MutationTransactionInfo {

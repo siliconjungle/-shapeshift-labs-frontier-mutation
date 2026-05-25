@@ -1,4 +1,5 @@
-import { OP_APPEND, OP_ARRAY_MOVE, OP_ARRAY_OBJECT_FIELD_ASSIGN, OP_ARRAY_SPLICE, OP_ASSIGN, OP_REMOVE, OP_SET, OP_STRING_SPLICE, applyPatch, cloneJson, diff, getPath, parsePointer } from '@shapeshift-labs/frontier';
+import { OP_APPEND, OP_ARRAY_MOVE, OP_ARRAY_OBJECT_FIELD_ASSIGN, OP_ARRAY_SPLICE, OP_ASSIGN, OP_REMOVE, OP_SET, OP_STRING_SPLICE, applyPatch, cloneJson, diff, getPath } from '@shapeshift-labs/frontier';
+import { cloneQueryCondition, collectQueryConditionFields, isSpecialQueryPath, matchesQueryConditions, normalizeQueryPath, normalizeQuerySchema, readQueryCondition, readQueryConditionEqualityHint, readQueryConditionValue } from '@shapeshift-labs/frontier-query';
 const DEFAULT_DIRTY_DIFF_MIN_SELECTIVITY = 0.75;
 export class SelectorBuilder {
     plan;
@@ -613,34 +614,7 @@ function normalizeCrdtMetadata(metadata) {
     return cloneJson(metadata);
 }
 function normalizeMutationSchema(schema) {
-    if (schema === undefined)
-        return { tables: [] };
-    const entries = Array.isArray(schema)
-        ? schema
-        : (schema.tables || []).concat(schema.entities || []);
-    const tables = [];
-    for (const table of entries) {
-        const normalized = {
-            path: normalizePath(table.path, 'mutation schema table path'),
-            key: table.key === undefined ? undefined : normalizePath(table.key, 'mutation schema key'),
-            stableRowShape: table.stableRowShape !== false,
-            numericFields: normalizeSchemaFields(table.numericFields, 'mutation schema numericFields'),
-            textFields: normalizeSchemaFields(table.textFields, 'mutation schema textFields'),
-            listFields: normalizeSchemaFields(table.listFields, 'mutation schema listFields'),
-            selectorFields: normalizeSchemaFields(table.selectorFields, 'mutation schema selectorFields')
-        };
-        if (normalized.path.length === 0)
-            throw new TypeError('mutation schema table path must not be root');
-        tables.push(normalized);
-    }
-    return { tables };
-}
-function normalizeSchemaFields(fields, label) {
-    if (fields === undefined)
-        return [];
-    if (!Array.isArray(fields))
-        throw new TypeError(label + ' must be an array');
-    return fields.map((field) => normalizePath(field, label));
+    return normalizeQuerySchema(schema, 'mutation schema');
 }
 function normalizeSelectivityThreshold(value) {
     if (value === undefined)
@@ -690,7 +664,7 @@ function chooseSelectorStrategy(planner, op, context) {
 }
 function chooseAbsoluteStrategy(planner, op) {
     if (planner.strategy === 'dirty-diff') {
-        return { strategy: 'dirty-diff', reason: 'forced-dirty-path-diff', dirtyPaths: [op.path.slice()] };
+        return { strategy: 'dirty-diff', reason: 'forced-dirty-path-diff', dirtyPaths: mutationDirtyPaths([], op.path, op) };
     }
     if (planner.strategy === 'materialize-diff') {
         return { strategy: 'materialize-diff', reason: 'forced-materialize-diff' };
@@ -756,8 +730,11 @@ function makeDirtyRowsFrontier(context, op) {
 }
 function makeSelectorDirtyPaths(context, op) {
     const paths = [];
-    for (const match of context.matches)
-        paths.push(match.path.concat(op.path));
+    for (const match of context.matches) {
+        const absolutePath = match.path.concat(op.path);
+        for (const dirtyPath of mutationDirtyPaths(match.path, absolutePath, op))
+            paths.push(dirtyPath);
+    }
     return paths;
 }
 function collectionSizeOf(collection) {
@@ -1160,22 +1137,7 @@ function selectorMutationPreservesMembership(selector, path) {
     return true;
 }
 function collectSelectorConditionFields(conditions, out) {
-    for (const condition of conditions)
-        collectConditionFields(condition, out);
-}
-function collectConditionFields(condition, out) {
-    if ('and' in condition) {
-        collectSelectorConditionFields(condition.and, out);
-    }
-    else if ('or' in condition) {
-        collectSelectorConditionFields(condition.or, out);
-    }
-    else if ('not' in condition) {
-        collectConditionFields(condition.not, out);
-    }
-    else {
-        out.push(normalizePath(condition.field, 'condition field'));
-    }
+    collectQueryConditionFields(conditions, out);
 }
 function overlappingMutationPaths(left, right) {
     return samePath(left, right) || isPathPrefix(left, right) || isPathPrefix(right, left);
@@ -1908,8 +1870,7 @@ function moveArrayItems(array, from, to, count) {
         return;
     const deleteCount = Math.min(count, array.length - from);
     const values = array.splice(from, deleteCount);
-    const target = from < to ? Math.max(0, to - deleteCount) : to;
-    array.splice(boundedIndex(target, array.length), 0, ...values);
+    array.splice(boundedIndex(to, array.length), 0, ...values);
 }
 function textStartForOperation(current, op) {
     const length = typeof current === 'string' ? current.length : 0;
@@ -2338,43 +2299,7 @@ function readObjectKeyHint(selector, collection, schema) {
     return keys.some((key) => Object.prototype.hasOwnProperty.call(collection, key)) ? keys : undefined;
 }
 function readSelectorEqualityHint(conditions, field) {
-    let values;
-    for (const condition of conditions) {
-        const next = readConditionEqualityHint(condition, field);
-        if (next === undefined)
-            continue;
-        values = values === undefined ? next : intersectObjectKeys(values, next);
-    }
-    return values;
-}
-function readConditionEqualityHint(condition, field) {
-    if ('and' in condition)
-        return readSelectorEqualityHint(condition.and, field);
-    if ('or' in condition) {
-        let values = [];
-        for (const item of condition.or) {
-            const next = readConditionEqualityHint(item, field);
-            if (next === undefined)
-                return undefined;
-            values = values.concat(next);
-        }
-        return uniqueObjectKeys(values);
-    }
-    if ('not' in condition)
-        return undefined;
-    if (!samePath(normalizePath(condition.field, 'condition field'), field))
-        return undefined;
-    const op = normalizeOperator(condition);
-    if (op !== 'eq' && op !== 'in')
-        return undefined;
-    const expected = readExpected(condition, op);
-    const values = op === 'in' && Array.isArray(expected) ? expected : [expected];
-    const keys = [];
-    for (const value of values) {
-        if (typeof value === 'string' || typeof value === 'number')
-            keys.push(value);
-    }
-    return keys.length === 0 ? undefined : uniqueObjectKeys(keys);
+    return readQueryConditionEqualityHint(conditions, field);
 }
 function readSelectorMatchKey(row, selector, fallback, meta, schema) {
     const keyPath = selector.keyBy || schema?.key;
@@ -2388,11 +2313,7 @@ function readFallbackSelectorKey(path) {
     return typeof key === 'string' || typeof key === 'number' ? key : 0;
 }
 function matchesSelector(value, conditions, meta) {
-    for (const condition of conditions) {
-        if (!evaluateCondition(value, condition, meta))
-            return false;
-    }
-    return true;
+    return matchesQueryConditions(value, conditions, meta);
 }
 function applySelectorOrderingAndLimit(matches, selector) {
     if (selector.orderBy !== undefined) {
@@ -2427,49 +2348,11 @@ function makeSelectorMatchOut(match, selector) {
     }
     return out;
 }
-function evaluateCondition(value, condition, meta) {
-    if ('and' in condition)
-        return condition.and.every((item) => evaluateCondition(value, item, meta));
-    if ('or' in condition)
-        return condition.or.some((item) => evaluateCondition(value, item, meta));
-    if ('not' in condition)
-        return !evaluateCondition(value, condition.not, meta);
-    const actual = readSelectorConditionValue(value, normalizePath(condition.field, 'condition field'), meta);
-    const op = normalizeOperator(condition);
-    const expected = readExpected(condition, op);
-    if (op === 'exists')
-        return expected === false ? actual === undefined : actual !== undefined;
-    if (op === 'eq')
-        return Object.is(actual, expected);
-    if (op === 'neq')
-        return !Object.is(actual, expected);
-    if (op === 'in')
-        return Array.isArray(expected) && expected.some((item) => Object.is(actual, item));
-    if (typeof actual !== 'number' || typeof expected !== 'number')
-        return false;
-    if (op === 'gt')
-        return actual > expected;
-    if (op === 'gte')
-        return actual >= expected;
-    if (op === 'lt')
-        return actual < expected;
-    if (op === 'lte')
-        return actual <= expected;
-    return false;
-}
 function readSelectorConditionValue(value, field, meta) {
-    if (field.length === 1 && field[0] === '$key')
-        return meta?.key;
-    if (field.length === 1 && field[0] === '$index')
-        return meta?.rowIndex;
-    if (field.length === 1 && field[0] === '$mapKey')
-        return meta?.mapKey;
-    return readPath(value, field);
+    return readQueryConditionValue(value, field, meta);
 }
 function isSpecialSelectorPath(path) {
-    return path.length === 1 && (path[0] === '$key' ||
-        path[0] === '$index' ||
-        path[0] === '$mapKey');
+    return isSpecialQueryPath(path);
 }
 function uniqueNumbers(values) {
     const out = [];
@@ -2487,82 +2370,8 @@ function uniqueStrings(values) {
     }
     return out;
 }
-function uniqueObjectKeys(values) {
-    const out = [];
-    for (const value of values) {
-        if (!out.some((existing) => Object.is(existing, value)))
-            out.push(value);
-    }
-    return out;
-}
-function intersectObjectKeys(left, right) {
-    const out = [];
-    for (const value of left) {
-        if (right.some((candidate) => Object.is(candidate, value)))
-            out.push(value);
-    }
-    return uniqueObjectKeys(out);
-}
 function readCondition(fieldOrCondition, op, value) {
-    if (typeof fieldOrCondition === 'string' || Array.isArray(fieldOrCondition)) {
-        return { field: fieldOrCondition, op: op || 'eq', value };
-    }
-    return cloneCondition(fieldOrCondition);
-}
-function normalizeOperator(condition) {
-    if (condition.eq !== undefined)
-        return 'eq';
-    if (condition.neq !== undefined)
-        return 'neq';
-    if (condition.gt !== undefined)
-        return 'gt';
-    if (condition.gte !== undefined)
-        return 'gte';
-    if (condition.lt !== undefined)
-        return 'lt';
-    if (condition.lte !== undefined)
-        return 'lte';
-    if (condition.in !== undefined)
-        return 'in';
-    if (condition.exists !== undefined)
-        return 'exists';
-    const op = condition.op || 'eq';
-    if (op === '==' || op === 'eq')
-        return 'eq';
-    if (op === '!=' || op === 'neq')
-        return 'neq';
-    if (op === '>' || op === 'gt')
-        return 'gt';
-    if (op === '>=' || op === 'gte')
-        return 'gte';
-    if (op === '<' || op === 'lt')
-        return 'lt';
-    if (op === '<=' || op === 'lte')
-        return 'lte';
-    if (op === 'in')
-        return 'in';
-    if (op === 'exists')
-        return 'exists';
-    throw new TypeError('unsupported selector operator: ' + op);
-}
-function readExpected(condition, op) {
-    if (op === 'eq' && condition.eq !== undefined)
-        return condition.eq;
-    if (op === 'neq' && condition.neq !== undefined)
-        return condition.neq;
-    if (op === 'gt' && condition.gt !== undefined)
-        return condition.gt;
-    if (op === 'gte' && condition.gte !== undefined)
-        return condition.gte;
-    if (op === 'lt' && condition.lt !== undefined)
-        return condition.lt;
-    if (op === 'lte' && condition.lte !== undefined)
-        return condition.lte;
-    if (op === 'in' && condition.in !== undefined)
-        return condition.in;
-    if (op === 'exists' && condition.exists !== undefined)
-        return condition.exists;
-    return condition.value;
+    return readQueryCondition(fieldOrCondition, op, value);
 }
 function normalizeOperation(op) {
     return {
@@ -2610,17 +2419,7 @@ function canUseRowFieldAssign(op) {
         op.kind === 'spliceText');
 }
 function normalizePath(path, label) {
-    if (path === undefined)
-        return [];
-    if (Array.isArray(path))
-        return path.slice();
-    if (typeof path !== 'string')
-        throw new TypeError(label + ' must be a JSON pointer string or path array');
-    if (path.length === 0)
-        return [];
-    if (path[0] === '/')
-        return parsePointer(path);
-    return path.split('.').filter(Boolean);
+    return normalizeQueryPath(path, label);
 }
 function normalizeSelectorName(name) {
     if (typeof name !== 'string' || name.length === 0)
@@ -2656,13 +2455,7 @@ function cloneSelectorPlan(plan) {
     };
 }
 function cloneCondition(condition) {
-    if ('and' in condition)
-        return { and: condition.and.map(cloneCondition) };
-    if ('or' in condition)
-        return { or: condition.or.map(cloneCondition) };
-    if ('not' in condition)
-        return { not: cloneCondition(condition.not) };
-    return { ...condition, field: normalizePath(condition.field, 'condition field'), in: condition.in === undefined ? undefined : condition.in.slice() };
+    return cloneQueryCondition(condition);
 }
 function normalizeTransactionInfo(options) {
     const info = {};

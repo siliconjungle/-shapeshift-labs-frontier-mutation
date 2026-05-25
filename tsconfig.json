@@ -8,16 +8,15 @@
     "declaration": true,
     "declarationMap": true,
     "sourceMap": true,
-    "ignoreDeprecations": "6.0",
-    "baseUrl": ".",
-    "paths": {
-      "@shapeshift-labs/frontier": ["../../dist/src/core.d.ts"],
-      "@shapeshift-labs/frontier/state": ["../../dist/src/state.d.ts"],
-      "@shapeshift-labs/frontier/crdt": ["../../dist/src/crdt-api.d.ts"]
-    },
+    "stripInternal": true,
     "strict": false,
     "noImplicitAny": false,
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    "composite": true,
+    "tsBuildInfoFile": "node_modules/.cache/tsconfig.tsbuildinfo",
+    "ignoreDeprecations": "6.0"
   },
-  "include": ["src/**/*.ts"]
+  "include": [
+    "src/**/*.ts"
+  ]
 }
