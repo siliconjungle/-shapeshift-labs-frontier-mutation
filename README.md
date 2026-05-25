@@ -12,12 +12,14 @@ Built on the core JSON diff/apply package: [`@shapeshift-labs/frontier`](https:/
 
 - [`@shapeshift-labs/frontier`](https://www.npmjs.com/package/@shapeshift-labs/frontier): core JSON diff/apply primitives used by compiled mutation patches.
 - [`@shapeshift-labs/frontier-query`](https://www.npmjs.com/package/@shapeshift-labs/frontier-query): shared query-key, selector path, condition, identity, and table-schema primitives used by mutation selectors.
+- [`@shapeshift-labs/frontier-engine`](https://www.npmjs.com/package/@shapeshift-labs/frontier-engine): planned diff engine for profiled dirty-diff and materialize-diff strategies.
 - [`@shapeshift-labs/frontier-codec`](https://www.npmjs.com/package/@shapeshift-labs/frontier-codec): optional patch serialization and transport layer for compiled patches.
 
 Package source repositories:
 
 - [`siliconjungle/-shapeshift-labs-frontier`](https://github.com/siliconjungle/-shapeshift-labs-frontier)
 - [`siliconjungle/-shapeshift-labs-frontier-query`](https://github.com/siliconjungle/-shapeshift-labs-frontier-query)
+- [`siliconjungle/-shapeshift-labs-frontier-engine`](https://github.com/siliconjungle/-shapeshift-labs-frontier-engine)
 - [`siliconjungle/-shapeshift-labs-frontier-codec`](https://github.com/siliconjungle/-shapeshift-labs-frontier-codec)
 
 ```sh
@@ -279,11 +281,11 @@ Latest local package-gate run on Node v26.1.0, darwin arm64, 3 rounds:
 
 | Fixture | Compile median | Apply median |
 | --- | ---: | ---: |
-| 1% sparse selector update | 2.44 ms | 3.37 us |
-| Indexed id `in` selector update | 1.72 ms | 4.36 us |
-| 10% dense selector update | 4.42 ms | 19.46 us |
-| Repeated arithmetic fold, 1000x | 0.85 us | 0.07 us |
-| Repeated text append fold, 1000x | 0.68 us | 0.19 us |
+| 1% sparse selector update | 2.43 ms | 3.29 us |
+| Indexed id `in` selector update | 1.79 ms | 4.87 us |
+| 10% dense selector update | 3.09 ms | 16.75 us |
+| Repeated arithmetic fold, 1000x | 0.58 us | 0.06 us |
+| Repeated text append fold, 1000x | 0.63 us | 0.13 us |
 
 These are Frontier-only package measurements, not competitor comparisons.
 
