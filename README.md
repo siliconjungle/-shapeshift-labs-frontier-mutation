@@ -32,6 +32,20 @@ The compiled patch contains concrete paths, indexes, and values. Queries are com
 
 The public surface is intentionally small: build selectors, build a mutation plan, then compile or commit it. Planner choices, compiler passes, and CRDT lowering stay behind options and result metadata.
 
+## Performance
+
+Frontier Mutation was measured from this package on Node v26.1.0, darwin arm64. Timings are median microseconds per operation across warmed samples; p95 is shown to make noise visible. Patch bytes are `JSON.stringify(patch)` bytes because this package emits Frontier patches and does not own binary transport encoding.
+
+| Fixture | Matches | Strategy | Patch | Bytes | Compile median | Compile p95 | Apply median |
+| --- | ---: | --- | ---: | ---: | ---: | ---: | ---: |
+| Selector increment, 1% sparse 10k-row table | 100 | row-field | 1 op | 1.0 KiB | 3.55 ms | 4.04 ms | 10.35 us |
+| Selector increment, indexed id IN | 100 | row-field | 1 op | 1.0 KiB | 2.84 ms | 3.12 ms | 8.77 us |
+| Selector increment, 10% 10k-row table | 1,000 | row-field | 1 op | 8.5 KiB | 4.10 ms | 4.90 ms | 20.33 us |
+| Repeated arithmetic fold, 1000x | 0 | direct | 1 op | 20 B | 0.45 us | 0.78 us | 0.05 us |
+| Repeated text append fold, 1000x | 0 | direct | 1 op | 1.0 KiB | 0.55 us | 0.72 us | 0.10 us |
+
+These are Frontier-only package measurements, not a competitor comparison. Hardware, Node version, selector shape, and table size will affect absolute timings.
+
 ## API Overview
 
 ```ts
