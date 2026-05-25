@@ -2,11 +2,11 @@
 
 Explicit mutation and selector plans for Frontier.
 
+This package keeps write intent above Frontier's concrete patch layer. A mutation plan can express operations such as increments, toggles, text/list appends, and selector-targeted row updates, then compile them into ordinary Frontier patches or safe CRDT operations.
+
 - npm: [`@shapeshift-labs/frontier-mutation`](https://www.npmjs.com/package/@shapeshift-labs/frontier-mutation)
 - source: [`siliconjungle/-shapeshift-labs-frontier-mutation`](https://github.com/siliconjungle/-shapeshift-labs-frontier-mutation)
 - license: MIT
-
-Built on the core JSON diff/apply package: [`@shapeshift-labs/frontier`](https://www.npmjs.com/package/@shapeshift-labs/frontier).
 
 ## Related Packages
 
@@ -22,11 +22,13 @@ Package source repositories:
 - [`siliconjungle/-shapeshift-labs-frontier-engine`](https://github.com/siliconjungle/-shapeshift-labs-frontier-engine)
 - [`siliconjungle/-shapeshift-labs-frontier-codec`](https://github.com/siliconjungle/-shapeshift-labs-frontier-codec)
 
+## Install
+
 ```sh
 npm install @shapeshift-labs/frontier @shapeshift-labs/frontier-query @shapeshift-labs/frontier-mutation
 ```
 
-`@shapeshift-labs/frontier-mutation` keeps intent above Frontier's concrete patch layer. A mutation plan can express operations such as increments, toggles, text/list appends, and selector-targeted row updates, then compile them into ordinary Frontier patches.
+## Usage
 
 ```js
 import { createMutationPlan, select } from '@shapeshift-labs/frontier-mutation';
@@ -46,9 +48,7 @@ const result = plan.compilePatch(state);
 
 The compiled patch contains concrete paths, indexes, and values. Queries are compile-time selectors, not replay-time patch semantics.
 
-The public surface is intentionally small: build selectors, build a mutation plan, then compile or commit it. Planner choices, compiler passes, and CRDT lowering stay behind options and result metadata.
-
-## API Overview
+## API
 
 ```ts
 import {
@@ -74,7 +74,7 @@ Core exports:
 - `commitMutation(stateEngine, plan, options?)` compiles and commits to any state engine with `get()` and `commitPatch()`.
 - `commitCrdtMutation(doc, plan, options?)` lowers safe intent to native CRDT operations when the document supports them.
 
-The package has peer dependencies on the core package and `@shapeshift-labs/frontier-query`. Selector conditions, path normalization, equality hints, and table schema hints come from that dependency-free companion package. State and CRDT integration use small structural interfaces, so the mutation package does not force the full state or CRDT packages into the core import path.
+The public surface is intentionally small: build selectors, build a mutation plan, then compile or commit it. Planner choices, compiler passes, and CRDT lowering stay behind options and result metadata.
 
 ## Selectors
 
@@ -269,6 +269,38 @@ CRDT commits lower intent to native operations when that is semantically safe:
 
 `crdtMetadata` is passed through Frontier's durable CRDT update metadata. The returned `crdtDecisions` list also includes per-operation debug metadata with the chosen strategy, reason, path, repeat count, and operation size summary.
 
+## Subpath Imports
+
+This package currently exposes the root entry point only:
+
+```ts
+import { createMutationPlan, select } from '@shapeshift-labs/frontier-mutation';
+```
+
+## Package Scope
+
+This package owns explicit mutation and selector intent:
+
+- selector builders and selector registries,
+- mutation plans and compile-time guards,
+- planner decisions for direct, row-field, dirty-diff, and materialized strategies,
+- structural state-engine and CRDT commit adapters.
+
+It does not own app-state subscriptions, normalized query caches, CRDT document storage, sync providers, patch codecs, or core diff/apply primitives.
+
+## TypeScript
+
+The package ships ESM JavaScript plus `.d.ts` declarations for the root export. The package-local TypeScript source lives in `src/` and compiles directly to `dist/`.
+
+## Validation
+
+```sh
+npm test
+npm run fuzz
+npm run bench
+npm run pack:dry
+```
+
 ## Benchmarks
 
 Run the package-local benchmark:
@@ -277,23 +309,18 @@ Run the package-local benchmark:
 npm run bench
 ```
 
-Latest local package-gate run on Node v26.1.0, darwin arm64, 3 rounds:
+Latest local package benchmark on Node v26.1.0, darwin arm64, 3 rounds:
 
 | Fixture | Compile median | Apply median |
 | --- | ---: | ---: |
-| 1% sparse selector update | 2.43 ms | 3.29 us |
-| Indexed id `in` selector update | 1.79 ms | 4.87 us |
-| 10% dense selector update | 3.09 ms | 16.75 us |
-| Repeated arithmetic fold, 1000x | 0.58 us | 0.06 us |
-| Repeated text append fold, 1000x | 0.63 us | 0.13 us |
+| 1% sparse selector update | 2.58 ms | 3.27 us |
+| Indexed id `in` selector update | 1.73 ms | 3.86 us |
+| 10% dense selector update | 3.07 ms | 17.00 us |
+| Repeated arithmetic fold, 1000x | 0.56 us | 0.06 us |
+| Repeated text append fold, 1000x | 0.64 us | 0.11 us |
 
 These are Frontier-only package measurements, not competitor comparisons.
 
-## Verification
+## License
 
-```sh
-npm test
-npm run fuzz
-npm run bench
-npm run pack:dry
-```
+MIT. See [LICENSE](./LICENSE).
