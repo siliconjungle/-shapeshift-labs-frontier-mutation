@@ -34,17 +34,23 @@ The public surface is intentionally small: build selectors, build a mutation pla
 
 ## Performance
 
-Frontier Mutation was measured from this package on Node v26.1.0, darwin arm64. Timings are median microseconds per operation across warmed samples; p95 is shown to make noise visible. Patch bytes are `JSON.stringify(patch)` bytes because this package emits Frontier patches and does not own binary transport encoding.
+Frontier Mutation was measured from this package with `npm run bench` on Node v26.1.0, darwin arm64. Timings are median microseconds per operation across 9 warmed rounds; p95 is shown to make noise visible. Patch bytes are `JSON.stringify(patch)` bytes because this package emits Frontier patches and does not own binary transport encoding.
 
 | Fixture | Matches | Strategy | Patch | Bytes | Compile median | Compile p95 | Apply median |
 | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: |
-| Selector increment, 1% sparse 10k-row table | 100 | row-field | 1 op | 1.0 KiB | 3.55 ms | 4.04 ms | 10.35 us |
-| Selector increment, indexed id IN | 100 | row-field | 1 op | 1.0 KiB | 2.84 ms | 3.12 ms | 8.77 us |
-| Selector increment, 10% 10k-row table | 1,000 | row-field | 1 op | 8.5 KiB | 4.10 ms | 4.90 ms | 20.33 us |
-| Repeated arithmetic fold, 1000x | 0 | direct | 1 op | 20 B | 0.45 us | 0.78 us | 0.05 us |
-| Repeated text append fold, 1000x | 0 | direct | 1 op | 1.0 KiB | 0.55 us | 0.72 us | 0.10 us |
+| Selector increment, 1% sparse 10k-row table | 100 | row-field | 1 op | 1007 B | 2.74 ms | 3.40 ms | 4.40 us |
+| Selector increment, indexed id IN | 100 | row-field | 1 op | 1003 B | 1.68 ms | 1.77 ms | 3.81 us |
+| Selector increment, 10% 10k-row table | 1,000 | row-field | 1 op | 9.6 KiB | 2.86 ms | 2.92 ms | 17.17 us |
+| Repeated arithmetic fold, 1000x | 0 | direct | 1 op | 20 B | 0.49 us | 0.60 us | 0.04 us |
+| Repeated text append fold, 1000x | 0 | direct | 1 op | 1021 B | 0.63 us | 0.78 us | 0.08 us |
 
 These are Frontier-only package measurements, not a competitor comparison. Hardware, Node version, selector shape, and table size will affect absolute timings.
+
+Reproduce the package-local benchmark with:
+
+```sh
+npm run bench
+```
 
 ## API Overview
 

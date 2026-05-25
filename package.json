@@ -1,6 +1,6 @@
 {
   "name": "@shapeshift-labs/frontier-mutation",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Explicit mutation and selector plans compiled to Frontier patches or CRDT operations.",
   "type": "module",
   "license": "MIT",
@@ -24,11 +24,13 @@
   },
   "files": [
     "dist",
+    "benchmarks/package-bench.mjs",
     "README.md",
     "LICENSE"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "bench": "npm run build && node benchmarks/package-bench.mjs",
     "test": "npm run build && node test/smoke.mjs",
     "prepack": "npm run test"
   },
