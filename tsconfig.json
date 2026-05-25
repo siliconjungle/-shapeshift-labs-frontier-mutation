@@ -1,0 +1,23 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "rootDir": "src",
+    "outDir": "dist",
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "ignoreDeprecations": "6.0",
+    "baseUrl": ".",
+    "paths": {
+      "@shapeshift-labs/frontier": ["../../dist/src/core.d.ts"],
+      "@shapeshift-labs/frontier/state": ["../../dist/src/state.d.ts"],
+      "@shapeshift-labs/frontier/crdt": ["../../dist/src/crdt-api.d.ts"]
+    },
+    "strict": false,
+    "noImplicitAny": false,
+    "skipLibCheck": true
+  },
+  "include": ["src/**/*.ts"]
+}
