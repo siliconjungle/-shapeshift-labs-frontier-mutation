@@ -339,13 +339,17 @@ export class MutationPlan {
     commitCrdt(doc, options) {
         return commitCrdtMutation(doc, this, options);
     }
+    access() {
+        return getMutationPlanAccess(this);
+    }
     explain(state, options = {}) {
         const result = compileMutationPlan(this, state, options);
         return {
             ...result,
             operations: this.ops.map(cloneMutationOperation),
             operationCount: this.ops.length,
-            patchOperationCount: result.patch.length
+            patchOperationCount: result.patch.length,
+            access: getMutationPlanAccess(this)
         };
     }
     push(op) {
@@ -363,16 +367,142 @@ export function select(path) {
 export function createMutationPlan() {
     return new MutationPlan();
 }
+export function getMutationPlanAccess(plan) {
+    const access = createMutationPlanAccess();
+    const operations = prepareMutationOperations(plan.operations);
+    for (let i = 0, length = operations.length; i < length; i++) {
+        collectOperationAccess(access, operations[i]);
+    }
+    access.operationCount = operations.length;
+    return cloneMutationPlanAccess(access);
+}
+export function explainMutationAccessConflict(left, right) {
+    const leftAccess = readMutationPlanAccess(left);
+    const rightAccess = readMutationPlanAccess(right);
+    for (let i = 0, length = leftAccess.writes.length; i < length; i++) {
+        const leftWrite = leftAccess.writes[i];
+        for (let j = 0, rightLength = rightAccess.writes.length; j < rightLength; j++) {
+            const rightWrite = rightAccess.writes[j];
+            if (accessPathsOverlap(leftWrite.path, rightWrite.path)) {
+                return { kind: 'write-write', left: cloneAccessTuple(leftWrite), right: cloneAccessTuple(rightWrite) };
+            }
+        }
+        for (let j = 0, rightLength = rightAccess.reads.length; j < rightLength; j++) {
+            const rightRead = rightAccess.reads[j];
+            if (accessPathsOverlap(leftWrite.path, rightRead.path)) {
+                return { kind: 'write-read', left: cloneAccessTuple(leftWrite), right: cloneAccessTuple(rightRead) };
+            }
+        }
+    }
+    for (let i = 0, length = leftAccess.reads.length; i < length; i++) {
+        const leftRead = leftAccess.reads[i];
+        for (let j = 0, rightLength = rightAccess.writes.length; j < rightLength; j++) {
+            const rightWrite = rightAccess.writes[j];
+            if (accessPathsOverlap(leftRead.path, rightWrite.path)) {
+                return { kind: 'read-write', left: cloneAccessTuple(leftRead), right: cloneAccessTuple(rightWrite) };
+            }
+        }
+    }
+    return null;
+}
+export function mutationAccessesConflict(left, right) {
+    return explainMutationAccessConflict(left, right) !== null;
+}
+export function canBatchMutationPlans(plans) {
+    const accesses = new Array(plans.length);
+    for (let i = 0, length = plans.length; i < length; i++)
+        accesses[i] = readMutationPlanAccess(plans[i]);
+    for (let i = 0, length = plans.length; i < length; i++) {
+        for (let j = i + 1; j < length; j++) {
+            if (mutationAccessesConflict(accesses[i], accesses[j]))
+                return false;
+        }
+    }
+    return true;
+}
+export function captureMutationFrame(state, options = {}) {
+    const source = state === undefined ? null : state;
+    const maxPaths = readFrameMaxPaths(options.maxPaths);
+    const entries = [];
+    const seen = new Set();
+    let dynamic = false;
+    if (options.paths !== undefined) {
+        for (let i = 0, length = options.paths.length; i < length; i++) {
+            addFramePath(entries, seen, source, normalizePath(options.paths[i], 'mutation frame path'), undefined, maxPaths);
+        }
+    }
+    if (options.plan !== undefined) {
+        const access = readMutationPlanAccess(options.plan);
+        dynamic = access.dynamic;
+        const includeReads = options.includeReads !== false;
+        const includeWrites = options.includeWrites === true;
+        if (includeReads)
+            addFrameAccessTuples(entries, seen, source, access.reads, maxPaths);
+        if (includeWrites)
+            addFrameAccessTuples(entries, seen, source, access.writes, maxPaths);
+    }
+    if (entries.length === 0 && options.plan === undefined && options.paths === undefined) {
+        addFramePath(entries, seen, source, [], undefined, maxPaths);
+    }
+    const frame = {
+        paths: entries,
+        dynamic
+    };
+    if (options.version !== undefined)
+        frame.version = cloneJson(options.version);
+    return frame;
+}
+export function evaluateMutationFrame(state, frame, options = {}) {
+    const source = state === undefined ? null : state;
+    const checkedPaths = [];
+    const changedPaths = [];
+    const versionMatches = frame.version === undefined ||
+        options.version === undefined ||
+        jsonEqual(frame.version, options.version);
+    if (!versionMatches) {
+        return {
+            ok: false,
+            checkedPaths,
+            changedPaths,
+            versionMatches,
+            dynamic: frame.dynamic,
+            reason: 'version-changed'
+        };
+    }
+    for (let i = 0, length = frame.paths.length; i < length; i++) {
+        const entry = frame.paths[i];
+        const current = readPath(source, entry.path);
+        const exists = current !== undefined;
+        checkedPaths[checkedPaths.length] = entry.path.slice();
+        if (exists !== entry.exists || (exists && !jsonEqual(current, entry.value))) {
+            changedPaths[changedPaths.length] = entry.path.slice();
+        }
+    }
+    return {
+        ok: changedPaths.length === 0,
+        checkedPaths,
+        changedPaths,
+        versionMatches,
+        dynamic: frame.dynamic,
+        reason: changedPaths.length === 0 ? undefined : 'path-changed'
+    };
+}
 export function createSelectorRegistry(initial) {
     return new SelectorRegistry(initial);
 }
 export function compileMutationPlan(plan, state, options = {}) {
     const source = state === undefined ? null : state;
+    const frameEvaluation = options.frame === undefined
+        ? undefined
+        : evaluateMutationFrame(source, options.frame, { version: options.frameVersion });
+    if (frameEvaluation !== undefined && !frameEvaluation.ok) {
+        throw new TypeError('mutation frame validation failed: ' + frameEvaluation.reason);
+    }
     const planner = normalizePlannerOptions(options);
-    const operations = optimizeMutationOperations(plan.operations);
+    const operations = prepareMutationOperations(plan.operations);
     const runtime = createMutationRuntime(planner.schema);
     if (planner.strategy === 'materialize-diff') {
-        return compileMaterializedDiffMutationPlan(operations, source, options, planner, runtime);
+        return attachMutationFrameEvaluation(compileMaterializedDiffMutationPlan(operations, source, options, planner, runtime), frameEvaluation);
     }
     let working = cloneJson(source);
     const patch = [];
@@ -449,7 +579,7 @@ export function compileMutationPlan(plan, state, options = {}) {
     }
     flushPendingRows(pendingRows, patch, dirtyRows);
     const outputPatch = options.compact === false ? patch : compactMutationPatch(patch);
-    return { patch: outputPatch, matched, lowered, dirtyPaths, dirtyRows, warnings, matches: matchesOut, decisions };
+    return attachMutationFrameEvaluation({ patch: outputPatch, matched, lowered, dirtyPaths, dirtyRows, warnings, matches: matchesOut, decisions }, frameEvaluation);
 }
 function compileMaterializedDiffMutationPlan(operations, source, options, planner, runtime) {
     let working = cloneJson(source);
@@ -507,6 +637,11 @@ function compileMaterializedDiffMutationPlan(operations, source, options, planne
     const outputPatch = options.compact === false ? patch : compactMutationPatch(patch);
     return { patch: outputPatch, matched, lowered, dirtyPaths, dirtyRows, warnings, matches: matchesOut, decisions };
 }
+function attachMutationFrameEvaluation(result, frame) {
+    if (frame !== undefined)
+        result.frame = frame;
+    return result;
+}
 export function commitMutation(state, plan, options) {
     const result = compileMutationPlan(plan, state.get(), options);
     state.commitPatch(result.patch);
@@ -516,7 +651,7 @@ export function commitCrdtMutation(doc, plan, options) {
     const state = doc.toJSON();
     const planner = normalizePlannerOptions(options);
     const compiled = compileMutationPlan(plan, state, options);
-    const operations = optimizeMutationOperations(plan.operations);
+    const operations = prepareMutationOperations(plan.operations);
     const crdtDecisions = [];
     const changeOptions = planner.crdtMetadata === undefined
         ? undefined
@@ -709,6 +844,294 @@ function makePlannerSchemaDecision(context, op) {
     if (context.usedIndex === true)
         decision.selectorIndexed = true;
     return decision;
+}
+function createMutationPlanAccess() {
+    return {
+        reads: [],
+        writes: [],
+        effects: [],
+        dynamic: false,
+        operationCount: 0
+    };
+}
+function readMutationPlanAccess(input) {
+    return isMutationPlanAccess(input) ? input : getMutationPlanAccess(input);
+}
+function isMutationPlanAccess(input) {
+    return Array.isArray(input.reads) &&
+        Array.isArray(input.writes) &&
+        Array.isArray(input.effects);
+}
+function collectOperationAccess(access, op) {
+    const selector = op.selector;
+    const basePath = selector === undefined ? [] : selector.path;
+    const targetPath = selector === undefined ? op.path : selector.path.concat(op.path);
+    const scope = accessScopeForPath(targetPath);
+    if (selector !== undefined) {
+        access.dynamic = true;
+        addMutationEffect(access, 'selector', selector.path, accessScopeForPath(selector.path), op, selector.path);
+        addMutationRead(access, selector.path, accessScopeForPath(selector.path), op, selector.path);
+        collectSelectorAccess(access, selector, op);
+    }
+    collectOperationReads(access, op, targetPath, scope, selector === undefined ? undefined : selector.path);
+    collectOperationWrites(access, op, basePath, targetPath, scope, selector === undefined ? undefined : selector.path);
+    collectOperationEffects(access, op, targetPath, scope, selector === undefined ? undefined : selector.path);
+}
+function collectSelectorAccess(access, selector, op) {
+    const selectorPath = selector.path;
+    const fields = [];
+    collectSelectorConditionFields(selector.conditions, fields);
+    if (selector.keyBy !== undefined)
+        fields[fields.length] = selector.keyBy;
+    if (selector.indexBy !== undefined)
+        fields[fields.length] = selector.indexBy;
+    if (selector.orderBy !== undefined)
+        fields[fields.length] = selector.orderBy.path;
+    if (selector.project !== undefined) {
+        for (let i = 0, length = selector.project.length; i < length; i++)
+            fields[fields.length] = selector.project[i];
+    }
+    for (let i = 0, length = fields.length; i < length; i++) {
+        if (isSpecialQueryPath(fields[i]))
+            continue;
+        const path = selectorPath.concat(fields[i]);
+        addMutationRead(access, path, accessScopeForPath(path), op, selectorPath);
+    }
+}
+function collectOperationReads(access, op, path, scope, selectorPath) {
+    if (op.factory !== undefined) {
+        access.dynamic = true;
+        addMutationRead(access, path, scope, op, selectorPath);
+        return;
+    }
+    if (op.predicate !== undefined) {
+        access.dynamic = true;
+        addMutationRead(access, path, scope, op, selectorPath);
+        return;
+    }
+    if (operationReadsTarget(op))
+        addMutationRead(access, path, scope, op, selectorPath);
+    if (op.kind === 'copy' || op.kind === 'move' || op.kind === 'rename')
+        addMutationRead(access, path, scope, op, selectorPath);
+}
+function collectOperationWrites(access, op, basePath, path, scope, selectorPath) {
+    if (op.kind === 'test')
+        return;
+    if (op.kind === 'copy') {
+        const to = resolveOperationToPath(basePath, op);
+        addMutationWrite(access, to, accessScopeForPath(to), op, selectorPath);
+        return;
+    }
+    if (op.kind === 'move') {
+        const to = resolveOperationToPath(basePath, op);
+        addMutationWrite(access, path, scope, op, selectorPath);
+        addMutationWrite(access, to, accessScopeForPath(to), op, selectorPath);
+        return;
+    }
+    if (op.kind === 'rename') {
+        const to = renameTargetPath(path, op);
+        addMutationWrite(access, path, scope, op, selectorPath);
+        addMutationWrite(access, to, accessScopeForPath(to), op, selectorPath);
+        return;
+    }
+    addMutationWrite(access, path, scope, op, selectorPath);
+}
+function collectOperationEffects(access, op, path, scope, selectorPath) {
+    if (op.kind === 'test' || op.kind === 'compareAndSet')
+        addMutationEffect(access, 'precondition', path, scope, op, selectorPath);
+    if (op.factory !== undefined)
+        addMutationEffect(access, 'factory', path, scope, op, selectorPath);
+    if (op.predicate !== undefined)
+        addMutationEffect(access, 'predicate', path, scope, op, selectorPath);
+    if (isRemoveOperation(op) || op.kind === 'removeAt' || op.kind === 'deleteText' || op.kind === 'pull' || op.kind === 'removeWhere') {
+        addMutationEffect(access, 'delete', path, scope, op, selectorPath);
+    }
+    if (isListInsertOperation(op) || op.kind === 'append' || op.kind === 'prepend' || op.kind === 'addToSet') {
+        addMutationEffect(access, 'insert', path, scope, op, selectorPath);
+    }
+    if (op.kind === 'move' || op.kind === 'moveItem' || op.kind === 'rename')
+        addMutationEffect(access, 'move', path, scope, op, selectorPath);
+    if (op.kind === 'copy')
+        addMutationEffect(access, 'copy', path, scope, op, selectorPath);
+    if (isTextAppendOperation(op) || isTextSpliceOperation(op) || op.kind === 'formatText') {
+        addMutationEffect(access, 'text', path, scope, op, selectorPath);
+    }
+    if (isNativeListCandidateOperation(op) || op.kind === 'splice' || op.kind === 'pull' || op.kind === 'removeWhere') {
+        addMutationEffect(access, 'list', path, scope, op, selectorPath);
+    }
+}
+function operationReadsTarget(op) {
+    return op.kind === 'ensure' ||
+        op.kind === 'upsert' ||
+        op.kind === 'assign' ||
+        op.kind === 'increment' ||
+        op.kind === 'decrement' ||
+        op.kind === 'multiply' ||
+        op.kind === 'min' ||
+        op.kind === 'max' ||
+        op.kind === 'clamp' ||
+        op.kind === 'toggle' ||
+        op.kind === 'append' ||
+        op.kind === 'prepend' ||
+        op.kind === 'splice' ||
+        op.kind === 'insert' ||
+        op.kind === 'removeAt' ||
+        op.kind === 'moveItem' ||
+        op.kind === 'addToSet' ||
+        op.kind === 'pull' ||
+        op.kind === 'removeWhere' ||
+        op.kind === 'appendText' ||
+        op.kind === 'spliceText' ||
+        op.kind === 'insertText' ||
+        op.kind === 'deleteText' ||
+        op.kind === 'replaceText' ||
+        op.kind === 'formatText' ||
+        op.kind === 'test' ||
+        op.kind === 'compareAndSet';
+}
+function addMutationRead(access, path, scope, op, selectorPath) {
+    addMutationAccessTuple(access.reads, 'read', path, scope, op, selectorPath);
+    if (scope === 'pattern')
+        access.dynamic = true;
+}
+function addMutationWrite(access, path, scope, op, selectorPath) {
+    addMutationAccessTuple(access.writes, 'write', path, scope, op, selectorPath);
+    if (scope === 'pattern')
+        access.dynamic = true;
+}
+function addMutationAccessTuple(target, intent, path, scope, op, selectorPath) {
+    for (let i = 0, length = target.length; i < length; i++) {
+        const current = target[i];
+        if (current.intent === intent &&
+            current.operation === op.kind &&
+            samePath(current.path, path) &&
+            current.scope === scope &&
+            sameOptionalPath(current.selectorPath, selectorPath)) {
+            return;
+        }
+    }
+    const tuple = {
+        intent,
+        path: path.slice(),
+        scope,
+        operation: op.kind
+    };
+    if (selectorPath !== undefined)
+        tuple.selectorPath = selectorPath.slice();
+    target[target.length] = tuple;
+}
+function addMutationEffect(access, kind, path, scope, op, selectorPath) {
+    for (let i = 0, length = access.effects.length; i < length; i++) {
+        const current = access.effects[i];
+        if (current.kind === kind &&
+            current.operation === op.kind &&
+            samePath(current.path, path) &&
+            current.scope === scope &&
+            sameOptionalPath(current.selectorPath, selectorPath)) {
+            return;
+        }
+    }
+    const effect = {
+        kind,
+        path: path.slice(),
+        scope,
+        operation: op.kind
+    };
+    if (selectorPath !== undefined)
+        effect.selectorPath = selectorPath.slice();
+    access.effects[access.effects.length] = effect;
+    if (scope === 'pattern')
+        access.dynamic = true;
+}
+function accessScopeForPath(path) {
+    return hasWildcardPath(path) ? 'pattern' : 'exact';
+}
+function hasWildcardPath(path) {
+    for (let i = 0, length = path.length; i < length; i++) {
+        if (path[i] === '*')
+            return true;
+    }
+    return false;
+}
+function accessPathsOverlap(left, right) {
+    return pathPatternPrefix(left, right) || pathPatternPrefix(right, left);
+}
+function pathPatternPrefix(prefix, path) {
+    if (prefix.length > path.length)
+        return false;
+    for (let i = 0, length = prefix.length; i < length; i++) {
+        if (!pathPatternSegmentMatches(prefix[i], path[i]))
+            return false;
+    }
+    return true;
+}
+function pathPatternSegmentMatches(left, right) {
+    return left === '*' || right === '*' || left === right;
+}
+function cloneMutationPlanAccess(access) {
+    return {
+        reads: access.reads.map(cloneAccessTuple),
+        writes: access.writes.map(cloneAccessTuple),
+        effects: access.effects.map(clonePlanEffect),
+        dynamic: access.dynamic,
+        operationCount: access.operationCount
+    };
+}
+function cloneAccessTuple(tuple) {
+    const out = {
+        intent: tuple.intent,
+        path: tuple.path.slice(),
+        scope: tuple.scope,
+        operation: tuple.operation
+    };
+    if (tuple.selectorPath !== undefined)
+        out.selectorPath = tuple.selectorPath.slice();
+    return out;
+}
+function clonePlanEffect(effect) {
+    const out = {
+        kind: effect.kind,
+        path: effect.path.slice(),
+        scope: effect.scope,
+        operation: effect.operation
+    };
+    if (effect.selectorPath !== undefined)
+        out.selectorPath = effect.selectorPath.slice();
+    return out;
+}
+function readFrameMaxPaths(maxPaths) {
+    if (maxPaths === undefined)
+        return 64;
+    if (!Number.isSafeInteger(maxPaths) || maxPaths < 1) {
+        throw new RangeError('mutation frame maxPaths must be a positive safe integer');
+    }
+    return maxPaths;
+}
+function addFrameAccessTuples(entries, seen, source, tuples, maxPaths) {
+    for (let i = 0, length = tuples.length; i < length; i++) {
+        const tuple = tuples[i];
+        if (tuple.scope === 'pattern')
+            continue;
+        addFramePath(entries, seen, source, tuple.path, tuple.intent, maxPaths);
+    }
+}
+function addFramePath(entries, seen, source, path, intent, maxPaths) {
+    const key = pathCacheKey(path);
+    if (seen.has(key))
+        return;
+    if (entries.length >= maxPaths)
+        throw new RangeError('mutation frame path count exceeds maxPaths');
+    seen.add(key);
+    const value = readPath(source, path);
+    const entry = {
+        path: path.slice(),
+        exists: value !== undefined
+    };
+    if (value !== undefined)
+        entry.value = cloneJson(value);
+    if (intent !== undefined)
+        entry.intent = intent;
+    entries[entries.length] = entry;
 }
 function canUseRowFieldMutation(context, op) {
     return context.wildcardCount === 1 &&
@@ -1048,6 +1471,88 @@ function optimizeMutationOperations(operations) {
         optimized.push(optimizedOp);
     }
     return optimized;
+}
+function prepareMutationOperations(operations) {
+    const optimized = optimizeMutationOperations(operations);
+    for (let i = 0; i < optimized.length; i++) {
+        if (canDeferTransactionDelete(optimized[i]))
+            return deferTransactionDeleteOperations(optimized);
+    }
+    return optimized;
+}
+function deferTransactionDeleteOperations(operations) {
+    let pending = null;
+    let pendingTransaction;
+    let reordered = null;
+    const output = (op) => {
+        if (reordered === null)
+            reordered = operations.slice(0, outputCount);
+        reordered.push(op);
+    };
+    let outputCount = 0;
+    const flushPending = () => {
+        if (pending === null || pending.length === 0)
+            return;
+        for (let i = 0; i < pending.length; i++)
+            output(pending[i]);
+        pending.length = 0;
+        pendingTransaction = undefined;
+    };
+    for (let i = 0; i < operations.length; i++) {
+        const op = operations[i];
+        if (pending !== null && pending.length !== 0) {
+            if (op.transaction === undefined ||
+                !sameTransactionInfo(op.transaction, pendingTransaction) ||
+                mutationRequiresDeferredDeleteFlush(op, pending)) {
+                flushPending();
+            }
+        }
+        if (canDeferTransactionDelete(op)) {
+            if (pending === null)
+                pending = [];
+            pending[pending.length] = op;
+            pendingTransaction = op.transaction;
+            if (reordered === null)
+                reordered = operations.slice(0, outputCount);
+            outputCount++;
+            continue;
+        }
+        if (reordered !== null)
+            reordered.push(op);
+        outputCount++;
+    }
+    flushPending();
+    return reordered === null ? operations : reordered;
+}
+function canDeferTransactionDelete(op) {
+    return op.transaction !== undefined &&
+        op.transaction.deferDeletes !== false &&
+        op.selector === undefined &&
+        isRemoveOperation(op);
+}
+function mutationRequiresDeferredDeleteFlush(op, pendingDeletes) {
+    if (op.selector !== undefined)
+        return true;
+    for (let i = 0; i < pendingDeletes.length; i++) {
+        if (operationOverlapsPath(op, pendingDeletes[i].path))
+            return true;
+    }
+    return false;
+}
+function operationOverlapsPath(op, path) {
+    if (overlappingMutationPaths(op.path, path))
+        return true;
+    if (op.to !== undefined && overlappingMutationPaths(op.to, path))
+        return true;
+    if (op.kind === 'rename') {
+        try {
+            return overlappingMutationPaths(renameTargetPath(op.path, op), path);
+        }
+        catch {
+            return true;
+        }
+    }
+    return false;
 }
 function withMatchWeight(op, matchWeight) {
     return { ...op, matchWeight };
@@ -2471,13 +2976,15 @@ function normalizeTransactionInfo(options) {
     }
     if (options.timestamp !== undefined)
         info.timestamp = normalizeFiniteNumber(options.timestamp, 'transaction timestamp');
+    info.deferDeletes = options.deferDeletes !== false;
     return info;
 }
 function cloneTransactionInfo(info) {
     return {
         origin: info.origin,
         metadata: info.metadata === undefined ? undefined : cloneJson(info.metadata),
-        timestamp: info.timestamp
+        timestamp: info.timestamp,
+        deferDeletes: info.deferDeletes
     };
 }
 function cloneMutationOperation(op) {
@@ -2606,6 +3113,7 @@ function sameTransactionInfo(left, right) {
         return left === right;
     return left.origin === right.origin &&
         left.timestamp === right.timestamp &&
+        left.deferDeletes === right.deferDeletes &&
         jsonEqual(left.metadata, right.metadata);
 }
 //# sourceMappingURL=index.js.map

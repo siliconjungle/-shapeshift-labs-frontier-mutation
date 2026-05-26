@@ -1,0 +1,87 @@
+{
+  "package": "@shapeshift-labs/frontier-mutation",
+  "version": "0.1.4",
+  "generatedAt": "2026-05-26T08:19:24.320Z",
+  "node": "v26.1.0",
+  "platform": "darwin arm64",
+  "rounds": 15,
+  "rows": [
+    {
+      "fixture": "Selector increment, 1% sparse 10k-row table",
+      "matches": 100,
+      "strategy": "row-field",
+      "patchOps": 1,
+      "jsonPatchBytes": 1007,
+      "compileMedianUs": 2887.08,
+      "compileP95Us": 3746.51,
+      "applyMedianUs": 4.03,
+      "applyP95Us": 4.63
+    },
+    {
+      "fixture": "Selector increment, indexed id IN",
+      "matches": 100,
+      "strategy": "row-field",
+      "patchOps": 1,
+      "jsonPatchBytes": 1003,
+      "compileMedianUs": 1848.64,
+      "compileP95Us": 2442.49,
+      "applyMedianUs": 4.24,
+      "applyP95Us": 4.71
+    },
+    {
+      "fixture": "Selector increment, 10% 10k-row table",
+      "matches": 1000,
+      "strategy": "row-field",
+      "patchOps": 1,
+      "jsonPatchBytes": 9809,
+      "compileMedianUs": 3514.02,
+      "compileP95Us": 4524.81,
+      "applyMedianUs": 21.26,
+      "applyP95Us": 28.45
+    },
+    {
+      "fixture": "Repeated arithmetic fold, 1000x",
+      "matches": 0,
+      "strategy": "direct",
+      "patchOps": 1,
+      "jsonPatchBytes": 20,
+      "compileMedianUs": 0.48,
+      "compileP95Us": 0.77,
+      "applyMedianUs": 0.05,
+      "applyP95Us": 0.06
+    },
+    {
+      "fixture": "Transaction defer deletes, 64 fields",
+      "matches": 0,
+      "strategy": "direct",
+      "patchOps": 128,
+      "jsonPatchBytes": 2915,
+      "compileMedianUs": 80.54,
+      "compileP95Us": 87.38,
+      "applyMedianUs": 8.77,
+      "applyP95Us": 9.59
+    },
+    {
+      "fixture": "Frame validate, 32 watched paths",
+      "matches": 32,
+      "strategy": "frame",
+      "patchOps": 0,
+      "jsonPatchBytes": 1564,
+      "compileMedianUs": 0.93,
+      "compileP95Us": 0.99,
+      "applyMedianUs": 0,
+      "applyP95Us": 0
+    },
+    {
+      "fixture": "Repeated text append fold, 1000x",
+      "matches": 0,
+      "strategy": "direct",
+      "patchOps": 1,
+      "jsonPatchBytes": 1021,
+      "compileMedianUs": 1,
+      "compileP95Us": 1.62,
+      "applyMedianUs": 0.11,
+      "applyP95Us": 0.16
+    }
+  ]
+}

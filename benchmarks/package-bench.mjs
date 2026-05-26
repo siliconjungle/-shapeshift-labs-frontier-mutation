@@ -5,7 +5,9 @@ import { performance } from 'node:perf_hooks';
 import { fileURLToPath } from 'node:url';
 import { applyPatchImmutable } from '@shapeshift-labs/frontier';
 import {
+  captureMutationFrame,
   createMutationPlan,
+  evaluateMutationFrame,
   select
 } from '../dist/index.js';
 
@@ -22,6 +24,8 @@ const rows = [
   runSelectorFixture(makeIndexedIdFixture()),
   runSelectorFixture(makeDenseSelectorFixture()),
   runDirectFixture(makeRepeatedArithmeticFixture()),
+  runDirectFixture(makeTransactionDeferredDeleteFixture()),
+  runFrameFixture(makeFrameEvaluationFixture()),
   runDirectFixture(makeRepeatedTextFixture())
 ];
 
@@ -94,6 +98,33 @@ function runDirectFixture(fixture) {
   };
 }
 
+function runFrameFixture(fixture) {
+  const current = evaluateMutationFrame(fixture.state, fixture.frame, fixture.options);
+  assert.strictEqual(current.ok, true);
+  const unrelated = evaluateMutationFrame(fixture.unrelatedState, fixture.frame, fixture.options);
+  assert.strictEqual(unrelated.ok, true);
+  const stale = evaluateMutationFrame(fixture.staleState, fixture.frame, fixture.options);
+  assert.strictEqual(stale.ok, false);
+
+  const timing = measure(() => {
+    const evaluated = evaluateMutationFrame(fixture.unrelatedState, fixture.frame, fixture.options);
+    if (!evaluated.ok) throw new Error('frame fixture became stale');
+    sink += evaluated.checkedPaths.length;
+  }, fixture.inner || 10000);
+
+  return {
+    fixture: fixture.name,
+    matches: fixture.frame.paths.length,
+    strategy: 'frame',
+    patchOps: 0,
+    jsonPatchBytes: Buffer.byteLength(JSON.stringify(fixture.frame)),
+    compileMedianUs: round(timing.median),
+    compileP95Us: round(timing.p95),
+    applyMedianUs: 0,
+    applyP95Us: 0
+  };
+}
+
 function makeSparseSelectorFixture() {
   const state = { rows: makeRows(10000) };
   const selector = select('/rows/*')
@@ -155,6 +186,49 @@ function makeRepeatedArithmeticFixture() {
     options: { compact: true, strategy: 'auto' },
     compileInner: 5000,
     applyInner: 10000
+  };
+}
+
+function makeTransactionDeferredDeleteFixture() {
+  return {
+    name: 'Transaction defer deletes, 64 fields',
+    state: {
+      profile: Object.fromEntries(Array.from({ length: 64 }, (_, index) => ['stale' + index, index])),
+      ui: {}
+    },
+    plan: (() => {
+      const plan = createMutationPlan();
+      plan.transaction((tx) => {
+        for (let i = 0; i < 64; i++) {
+          tx.remove('/profile/stale' + i);
+          tx.set('/ui/f' + i, i);
+        }
+      });
+      return plan;
+    })(),
+    options: { compact: true, strategy: 'auto' },
+    compileInner: 3000,
+    applyInner: 6000
+  };
+}
+
+function makeFrameEvaluationFixture() {
+  const doc = {};
+  const paths = new Array(32);
+  for (let i = 0; i < paths.length; i++) {
+    doc['f' + i] = i;
+    paths[i] = '/doc/f' + i;
+  }
+  const state = { version: 1, doc, ui: { theme: 'light' } };
+  const frame = captureMutationFrame(state, { paths, version: 'bench-v1' });
+  return {
+    name: 'Frame validate, 32 watched paths',
+    state,
+    unrelatedState: { ...state, ui: { theme: 'dark' } },
+    staleState: { ...state, doc: { ...doc, f12: -1 } },
+    frame,
+    options: { version: 'bench-v1' },
+    inner: 10000
   };
 }
 

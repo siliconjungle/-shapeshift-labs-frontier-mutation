@@ -51,11 +51,14 @@ export interface MutationTransactionOptions {
     origin?: string;
     metadata?: JsonObject;
     timestamp?: number;
+    /** Defer whole-path removals until the transaction boundary unless an overlapping op needs them first. Defaults to true. */
+    deferDeletes?: boolean;
 }
 export interface MutationTransactionInfo {
     origin?: string;
     metadata?: JsonObject;
     timestamp?: number;
+    deferDeletes?: boolean;
 }
 export interface SelectorPlan {
     path: JsonPath;
@@ -106,6 +109,10 @@ export interface MutationCompileOptions {
     strategy?: MutationPatchStrategy;
     diff?: DiffOptions;
     planner?: MutationPlannerOptions;
+    /** Optional authored-state frame to validate before compiling the mutation. */
+    frame?: MutationFrameReference;
+    /** Current state/version token to compare with `frame.version` when validating `frame`. */
+    frameVersion?: JsonValue;
 }
 export type MutationPatchStrategy = 'auto' | 'direct' | 'row-field' | 'dirty-diff' | 'materialize-diff';
 export type MutationPlannerDecisionStrategy = 'direct' | 'row-field' | 'dirty-diff' | 'materialize-diff' | 'noop';
@@ -129,6 +136,66 @@ export interface MutationDirtyRowsFrontier {
     path: JsonPath;
     rows: number[];
     fields?: JsonPath[];
+}
+export type MutationAccessIntent = 'read' | 'write';
+export type MutationAccessScope = 'exact' | 'subtree' | 'pattern';
+export type MutationPlanEffectKind = 'selector' | 'precondition' | 'factory' | 'predicate' | 'insert' | 'delete' | 'move' | 'copy' | 'text' | 'list';
+export interface MutationAccessTuple {
+    intent: MutationAccessIntent;
+    path: JsonPath;
+    scope: MutationAccessScope;
+    operation: MutationOperationKind;
+    selectorPath?: JsonPath;
+}
+export interface MutationPlanEffect {
+    kind: MutationPlanEffectKind;
+    path: JsonPath;
+    scope: MutationAccessScope;
+    operation: MutationOperationKind;
+    selectorPath?: JsonPath;
+}
+export interface MutationPlanAccess {
+    reads: MutationAccessTuple[];
+    writes: MutationAccessTuple[];
+    effects: MutationPlanEffect[];
+    dynamic: boolean;
+    operationCount: number;
+}
+export interface MutationFramePathEntry {
+    path: JsonPath;
+    exists: boolean;
+    value?: JsonValue;
+    intent?: MutationAccessIntent;
+}
+export interface MutationFrameReference {
+    version?: JsonValue;
+    paths: MutationFramePathEntry[];
+    dynamic: boolean;
+}
+export interface MutationFrameCaptureOptions {
+    plan?: MutationPlanLike | MutationPlanAccess;
+    paths?: readonly MutationPath[];
+    includeReads?: boolean;
+    includeWrites?: boolean;
+    version?: JsonValue;
+    maxPaths?: number;
+}
+export interface MutationFrameEvaluationOptions {
+    version?: JsonValue;
+}
+export interface MutationFrameEvaluation {
+    ok: boolean;
+    checkedPaths: JsonPath[];
+    changedPaths: JsonPath[];
+    versionMatches: boolean;
+    dynamic: boolean;
+    reason?: 'version-changed' | 'path-changed';
+}
+export type MutationAccessConflictKind = 'write-write' | 'read-write' | 'write-read';
+export interface MutationAccessConflict {
+    kind: MutationAccessConflictKind;
+    left: MutationAccessTuple;
+    right: MutationAccessTuple;
 }
 export interface MutationPlannerDecision {
     strategy: MutationPlannerDecisionStrategy;
@@ -179,11 +246,13 @@ export interface MutationCompileResult {
     warnings: string[];
     matches: MutationSelectorMatch[];
     decisions: MutationPlannerDecision[];
+    frame?: MutationFrameEvaluation;
 }
 export interface MutationPlanExplanation extends MutationCompileResult {
     operations: MutationOperation[];
     operationCount: number;
     patchOperationCount: number;
+    access: MutationPlanAccess;
 }
 export interface MutationCrdtCommitResult extends MutationCompileResult {
     commit: MutationCrdtCommit;
@@ -265,11 +334,18 @@ export declare class MutationPlan implements MutationPlanLike {
     compilePatch(state: JsonValue | undefined, options?: MutationCompileOptions): MutationCompileResult;
     commit(state: MutationStateEngine, options?: MutationCompileOptions): MutationCompileResult;
     commitCrdt(doc: MutationCrdtDocument, options?: MutationCompileOptions): MutationCrdtCommitResult;
+    access(): MutationPlanAccess;
     explain(state: JsonValue | undefined, options?: MutationCompileOptions): MutationPlanExplanation;
     private push;
 }
 export declare function select(path: MutationPath): SelectorBuilder;
 export declare function createMutationPlan(): MutationPlan;
+export declare function getMutationPlanAccess(plan: MutationPlanLike): MutationPlanAccess;
+export declare function explainMutationAccessConflict(left: MutationPlanLike | MutationPlanAccess, right: MutationPlanLike | MutationPlanAccess): MutationAccessConflict | null;
+export declare function mutationAccessesConflict(left: MutationPlanLike | MutationPlanAccess, right: MutationPlanLike | MutationPlanAccess): boolean;
+export declare function canBatchMutationPlans(plans: ReadonlyArray<MutationPlanLike | MutationPlanAccess>): boolean;
+export declare function captureMutationFrame(state: JsonValue | undefined, options?: MutationFrameCaptureOptions): MutationFrameReference;
+export declare function evaluateMutationFrame(state: JsonValue | undefined, frame: MutationFrameReference, options?: MutationFrameEvaluationOptions): MutationFrameEvaluation;
 export declare function createSelectorRegistry(initial?: SelectorRegistryInit): SelectorRegistry;
 export declare function compileMutationPlan(plan: MutationPlanLike, state: JsonValue | undefined, options?: MutationCompileOptions): MutationCompileResult;
 export declare function commitMutation(state: MutationStateEngine, plan: MutationPlanLike, options?: MutationCompileOptions): MutationCompileResult;

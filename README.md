@@ -10,6 +10,9 @@ This package keeps write intent above Frontier's concrete patch layer. A mutatio
 
 ## Related Packages
 
+- [`@shapeshift-labs/frontier-state-cache-idb`](https://www.npmjs.com/package/@shapeshift-labs/frontier-state-cache-idb): IndexedDB persistence adapter for Frontier state-cache snapshots.
+- [`@shapeshift-labs/frontier-state-cache-file`](https://www.npmjs.com/package/@shapeshift-labs/frontier-state-cache-file): Structured file persistence adapter for Frontier state-cache snapshots and change logs.
+- [`@shapeshift-labs/frontier-state-cache-sql`](https://www.npmjs.com/package/@shapeshift-labs/frontier-state-cache-sql): SQL persistence adapter for Frontier state-cache snapshots and change logs.
 - [`@shapeshift-labs/frontier`](https://www.npmjs.com/package/@shapeshift-labs/frontier): core JSON diff/apply primitives used by compiled mutation patches.
 - [`@shapeshift-labs/frontier-query`](https://www.npmjs.com/package/@shapeshift-labs/frontier-query): shared query-key, selector path, condition, identity, and table-schema primitives used by mutation selectors.
 - [`@shapeshift-labs/frontier-engine`](https://www.npmjs.com/package/@shapeshift-labs/frontier-engine): planned diff engine for profiled dirty-diff and materialize-diff strategies.
@@ -17,6 +20,9 @@ This package keeps write intent above Frontier's concrete patch layer. A mutatio
 
 Package source repositories:
 
+- [`siliconjungle/-shapeshift-labs-frontier-state-cache-idb`](https://github.com/siliconjungle/-shapeshift-labs-frontier-state-cache-idb)
+- [`siliconjungle/-shapeshift-labs-frontier-state-cache-file`](https://github.com/siliconjungle/-shapeshift-labs-frontier-state-cache-file)
+- [`siliconjungle/-shapeshift-labs-frontier-state-cache-sql`](https://github.com/siliconjungle/-shapeshift-labs-frontier-state-cache-sql)
 - [`siliconjungle/-shapeshift-labs-frontier`](https://github.com/siliconjungle/-shapeshift-labs-frontier)
 - [`siliconjungle/-shapeshift-labs-frontier-query`](https://github.com/siliconjungle/-shapeshift-labs-frontier-query)
 - [`siliconjungle/-shapeshift-labs-frontier-engine`](https://github.com/siliconjungle/-shapeshift-labs-frontier-engine)
@@ -52,13 +58,21 @@ The compiled patch contains concrete paths, indexes, and values. Queries are com
 
 ```ts
 import {
+  canBatchMutationPlans,
   compileMutationPlan,
   commitCrdtMutation,
   commitMutation,
+  captureMutationFrame,
   createMutationPlan,
   createSelectorRegistry,
+  evaluateMutationFrame,
+  getMutationPlanAccess,
+  mutationAccessesConflict,
   select,
   type MutationCompileResult,
+  type MutationFrameEvaluation,
+  type MutationFrameReference,
+  type MutationPlanAccess,
   type MutationPlannerDecision,
   type MutationPlanLike,
   type MutationStateEngine
@@ -73,8 +87,35 @@ Core exports:
 - `compileMutationPlan(plan, state, options?)` compiles intent into a normal Frontier patch.
 - `commitMutation(stateEngine, plan, options?)` compiles and commits to any state engine with `get()` and `commitPatch()`.
 - `commitCrdtMutation(doc, plan, options?)` lowers safe intent to native CRDT operations when the document supports them.
+- `getMutationPlanAccess(plan)` exposes declared read/write/effect tuples without compiling against state.
+- `mutationAccessesConflict(left, right)` and `canBatchMutationPlans(plans)` check whether declared access sets can safely batch.
+- `captureMutationFrame(state, options?)` and `evaluateMutationFrame(state, frame, options?)` validate optimistic work against the authored state/version before compiling.
 
 The public surface is intentionally small: build selectors, build a mutation plan, then compile or commit it. Planner choices, compiler passes, and CRDT lowering stay behind options and result metadata.
+
+## Authored-State Frames
+
+Mutation frames are bounded snapshots of the exact paths a plan read while it was authored. Use them for optimistic mutations, deferred validation, or UI work that should only compile if the fields it depended on are still unchanged:
+
+```ts
+const plan = createMutationPlan()
+  .compareAndSet('/version', 1, 2)
+  .set('/title', 'Published');
+
+const frame = captureMutationFrame(stateAtAuthorTime, {
+  plan,
+  version: 'view-1'
+});
+
+const result = compileMutationPlan(plan, currentState, {
+  frame,
+  frameVersion: 'view-1'
+});
+
+console.log(result.frame?.ok);
+```
+
+By default, frames capture non-pattern declared reads. Pass explicit `paths`, `includeWrites: true`, or `maxPaths` when an optimistic workflow needs a wider or stricter frame.
 
 ## Selectors
 
@@ -188,7 +229,7 @@ The detailed cross-planner contract lives in [`docs/mutation-semantics.md`](../.
 | Rich text | `formatText` | Materializes a `{ text, spans }`-style value with appended span metadata. | Materialized today; richer CRDT-richtext lowering is a future boundary. | Known JSON shape |
 | Path moves | `copy`, `move`, `rename` | Emits target `OP_SET` plus source remove, or `OP_ARRAY_MOVE` for same-array moves. Dirty diff tracks source and target paths. | Materialized through set/delete today. | Known |
 | Selectors | `where`, `orderBy`, `limit`, `first`, `project`, `keyBy`, `indexBy` | Resolved at compile time; projected fields appear in `result.matches`. | Same compile-time row resolution before CRDT lowering. | Known |
-| Diagnostics | `transaction`, `explain` | Transaction metadata is attached to operation metadata; `explain()` returns operations, patch count, matches, decisions. | CRDT decision metadata includes operation and transaction summaries. | Known diagnostic |
+| Diagnostics | `transaction`, `explain`, `access` | Transaction metadata is attached to operation metadata; whole-path `remove`/`unset` ops are deferred to the transaction boundary unless an overlapping op must observe them first. `explain()` returns operations, patch count, matches, decisions, and declared access tuples. | CRDT decision metadata includes operation and transaction summaries; deferred removes still lower to native tombstone deletes where eligible. | Known diagnostic |
 
 Examples:
 
@@ -218,6 +259,7 @@ Compiled results include:
 - `dirtyPaths` / `dirtyRows`: locality passed to diff planning
 - `matches`: selector matches with resolved paths
 - `decisions`: planner choices and reasons
+- `access` on `plan.explain(...)`: declared reads, writes, and effects for conflict detection, optimistic safety, and future scheduling
 
 Adjacent arithmetic and repeated calls are folded where Frontier can represent the result compactly:
 
@@ -309,15 +351,17 @@ Run the package-local benchmark:
 npm run bench
 ```
 
-Latest local package benchmark on Node v26.1.0, darwin arm64, 3 rounds:
+Latest local package benchmark on Node v26.1.0, darwin arm64, 15 rounds:
 
 | Fixture | Compile median | Apply median |
 | --- | ---: | ---: |
-| 1% sparse selector update | 2.58 ms | 3.27 us |
-| Indexed id `in` selector update | 1.73 ms | 3.86 us |
-| 10% dense selector update | 3.07 ms | 17.00 us |
-| Repeated arithmetic fold, 1000x | 0.56 us | 0.06 us |
-| Repeated text append fold, 1000x | 0.64 us | 0.11 us |
+| 1% sparse selector update | 2.89 ms | 4.03 us |
+| Indexed id `in` selector update | 1.85 ms | 4.24 us |
+| 10% dense selector update | 3.51 ms | 21.26 us |
+| Repeated arithmetic fold, 1000x | 0.48 us | 0.05 us |
+| Transaction defer deletes, 64 fields | 80.54 us | 8.77 us |
+| Frame validate, 32 watched paths | 0.93 us | 0.00 us |
+| Repeated text append fold, 1000x | 1.00 us | 0.11 us |
 
 These are Frontier-only package measurements, not competitor comparisons.
 
