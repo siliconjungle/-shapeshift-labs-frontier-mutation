@@ -1,10 +1,10 @@
 {
   "package": "@shapeshift-labs/frontier-mutation",
   "version": "0.1.4",
-  "generatedAt": "2026-05-26T08:19:24.320Z",
+  "generatedAt": "2026-05-28T07:37:09.923Z",
   "node": "v26.1.0",
   "platform": "darwin arm64",
-  "rounds": 15,
+  "rounds": 9,
   "rows": [
     {
       "fixture": "Selector increment, 1% sparse 10k-row table",
@@ -12,10 +12,10 @@
       "strategy": "row-field",
       "patchOps": 1,
       "jsonPatchBytes": 1007,
-      "compileMedianUs": 2887.08,
-      "compileP95Us": 3746.51,
-      "applyMedianUs": 4.03,
-      "applyP95Us": 4.63
+      "compileMedianUs": 2407.88,
+      "compileP95Us": 2699.83,
+      "applyMedianUs": 3.57,
+      "applyP95Us": 3.87
     },
     {
       "fixture": "Selector increment, indexed id IN",
@@ -23,10 +23,10 @@
       "strategy": "row-field",
       "patchOps": 1,
       "jsonPatchBytes": 1003,
-      "compileMedianUs": 1848.64,
-      "compileP95Us": 2442.49,
-      "applyMedianUs": 4.24,
-      "applyP95Us": 4.71
+      "compileMedianUs": 1601.81,
+      "compileP95Us": 1654.98,
+      "applyMedianUs": 3.77,
+      "applyP95Us": 3.98
     },
     {
       "fixture": "Selector increment, 10% 10k-row table",
@@ -34,10 +34,10 @@
       "strategy": "row-field",
       "patchOps": 1,
       "jsonPatchBytes": 9809,
-      "compileMedianUs": 3514.02,
-      "compileP95Us": 4524.81,
-      "applyMedianUs": 21.26,
-      "applyP95Us": 28.45
+      "compileMedianUs": 2838.42,
+      "compileP95Us": 2949.14,
+      "applyMedianUs": 17.12,
+      "applyP95Us": 17.25
     },
     {
       "fixture": "Repeated arithmetic fold, 1000x",
@@ -45,9 +45,9 @@
       "strategy": "direct",
       "patchOps": 1,
       "jsonPatchBytes": 20,
-      "compileMedianUs": 0.48,
-      "compileP95Us": 0.77,
-      "applyMedianUs": 0.05,
+      "compileMedianUs": 0.52,
+      "compileP95Us": 0.63,
+      "applyMedianUs": 0.04,
       "applyP95Us": 0.06
     },
     {
@@ -56,10 +56,10 @@
       "strategy": "direct",
       "patchOps": 128,
       "jsonPatchBytes": 2915,
-      "compileMedianUs": 80.54,
-      "compileP95Us": 87.38,
-      "applyMedianUs": 8.77,
-      "applyP95Us": 9.59
+      "compileMedianUs": 73.24,
+      "compileP95Us": 74.62,
+      "applyMedianUs": 8.36,
+      "applyP95Us": 8.44
     },
     {
       "fixture": "Frame validate, 32 watched paths",
@@ -67,8 +67,19 @@
       "strategy": "frame",
       "patchOps": 0,
       "jsonPatchBytes": 1564,
-      "compileMedianUs": 0.93,
-      "compileP95Us": 0.99,
+      "compileMedianUs": 0.83,
+      "compileP95Us": 0.84,
+      "applyMedianUs": 0,
+      "applyP95Us": 0
+    },
+    {
+      "fixture": "Action dispatch, query + patch commit",
+      "matches": 2,
+      "strategy": "action",
+      "patchOps": 1,
+      "jsonPatchBytes": 386,
+      "compileMedianUs": 134.04,
+      "compileP95Us": 136.75,
       "applyMedianUs": 0,
       "applyP95Us": 0
     },
@@ -78,10 +89,10 @@
       "strategy": "direct",
       "patchOps": 1,
       "jsonPatchBytes": 1021,
-      "compileMedianUs": 1,
-      "compileP95Us": 1.62,
+      "compileMedianUs": 0.85,
+      "compileP95Us": 0.96,
       "applyMedianUs": 0.11,
-      "applyP95Us": 0.16
+      "applyP95Us": 0.12
     }
   ]
 }

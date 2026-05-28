@@ -94,6 +94,7 @@ import {
   commitCrdtMutation,
   commitMutation,
   captureMutationFrame,
+  createActionRegistry,
   createMutationPlan,
   createSelectorRegistry,
   evaluateMutationFrame,
@@ -106,6 +107,7 @@ import {
   type MutationPlanAccess,
   type MutationPlannerDecision,
   type MutationPlanLike,
+  type MutationActionRecord,
   type MutationStateEngine
 } from '@shapeshift-labs/frontier-mutation';
 ```
@@ -118,11 +120,80 @@ Core exports:
 - `compileMutationPlan(plan, state, options?)` compiles intent into a normal Frontier patch.
 - `commitMutation(stateEngine, plan, options?)` compiles and commits to any state engine with `get()` and `commitPatch()`.
 - `commitCrdtMutation(doc, plan, options?)` lowers safe intent to native CRDT operations when the document supports them.
+- `createActionRegistry(options?)` registers callable actions, dispatches them from any host, commits their patches, and records provenance.
 - `getMutationPlanAccess(plan)` exposes declared read/write/effect tuples without compiling against state.
 - `mutationAccessesConflict(left, right)` and `canBatchMutationPlans(plans)` check whether declared access sets can safely batch.
 - `captureMutationFrame(state, options?)` and `evaluateMutationFrame(state, frame, options?)` validate optimistic work against the authored state/version before compiling.
 
 The public surface is intentionally small: build selectors, build a mutation plan, then compile or commit it. Planner choices, compiler passes, and CRDT lowering stay behind options and result metadata.
+
+## Actions And Provenance
+
+Use an action registry when mutations need to be callable from DOM events, service classes, game systems, tests, or AI tools while still leaving an inspectable state graph:
+
+```js
+import { createActionRegistry } from '@shapeshift-labs/frontier-mutation';
+
+const actions = createActionRegistry({
+  state,
+  actor: 'local-user',
+  logger,
+  eventLog
+});
+
+const todoIdInput = (value) => ({
+  valid: value && typeof value.id === 'string',
+  issues: [{ path: '/id', message: 'id must be a string' }]
+});
+
+actions.register({
+  id: 'todo.toggle',
+  input: todoIdInput,
+  reads: ['/todos/*/done'],
+  writes: ['/todos/*/done'],
+  affects: ['dom.binding:todo-row', 'view:openTodos'],
+  run(ctx, input) {
+    const todo = ctx.query('/todos/*', { id: input.id });
+    if (!todo) return;
+    ctx.commit([[0, ['todos', todo.index, 'done'], !todo.value.done]]);
+  }
+});
+
+actions.dispatch('todo.toggle', { id: 'a' }, {
+  causeId: 'click:todo-a',
+  reads: ['/todos/0/id'],
+  affected: ['dom.binding:b:toggle:action:click']
+});
+
+actions.schedule('todo.toggle', { id: 'a' }, {
+  scheduler,
+  lane: 'action',
+  key: 'todo:a',
+  causeId: 'timer:todo-a',
+  autoRun: true
+});
+```
+
+Every dispatch records the static declaration and the runtime mutation:
+
+```js
+const graph = actions.inspect();
+
+graph.records.at(-1);
+// {
+//   actionId: 'todo.toggle',
+//   causeId: 'click:todo-a',
+//   actor: 'local-user',
+//   reads: [['todos', '*', 'done'], ['todos', 0, 'id'], ['todos', '*']],
+//   writes: [['todos', '*', 'done'], ['todos', 0, 'done']],
+//   patch: [[0, ['todos', 0, 'done'], true]],
+//   affected: ['dom.binding:todo-row', 'dom.binding:b:toggle:action:click', 'view:openTodos']
+// }
+```
+
+`actions.schedule(...)` queues the same action through any structural scheduler with `schedule()`, and the eventual run still records provenance as a normal dispatch. `actions.commitPatch(patch, { actionId, causeId, reads, affected })` records unregistered/direct patch writes through the same graph. DOM and other adapters can pass origin `reads`, `writes`, and `affected` nodes when they assemble an action input outside the action body. Logging, scheduler, and event-log integration are structural: pass any object with `info()`, `schedule()`, or `append()` methods; the mutation package does not import logging, DOM, React, CRDT sync, scheduler, or event-log packages.
+
+`input` is structural too. It accepts `frontier-schema` compiled validators, simple validation functions, or schema-like objects with `validate()`, `check()`, `parse()`, or `safeParse()`.
 
 ## Authored-State Frames
 
@@ -330,6 +401,14 @@ commitCrdtMutation(doc, plan, {
 plan.commitCrdt(doc);
 ```
 
+Normalized query caches can use the optional bridge from `@shapeshift-labs/frontier-state-cache/mutation`:
+
+```js
+import { commitCacheQueryMutation } from '@shapeshift-labs/frontier-state-cache/mutation';
+
+commitCacheQueryMutation(cache, ['todos', { status: 'open' }], plan);
+```
+
 CRDT commits lower intent to native operations when that is semantically safe:
 
 - arithmetic becomes native counters
@@ -386,13 +465,13 @@ Latest local package benchmark on Node v26.1.0, darwin arm64, 15 rounds:
 
 | Fixture | Compile median | Apply median |
 | --- | ---: | ---: |
-| 1% sparse selector update | 2.89 ms | 4.03 us |
-| Indexed id `in` selector update | 1.85 ms | 4.24 us |
-| 10% dense selector update | 3.51 ms | 21.26 us |
-| Repeated arithmetic fold, 1000x | 0.48 us | 0.05 us |
-| Transaction defer deletes, 64 fields | 80.54 us | 8.77 us |
-| Frame validate, 32 watched paths | 0.93 us | 0.00 us |
-| Repeated text append fold, 1000x | 1.00 us | 0.11 us |
+| 1% sparse selector update | 2.57 ms | 3.85 us |
+| Indexed id `in` selector update | 1.94 ms | 4.06 us |
+| 10% dense selector update | 3.18 ms | 17.59 us |
+| Repeated arithmetic fold, 1000x | 0.61 us | 0.05 us |
+| Transaction defer deletes, 64 fields | 78.76 us | 8.76 us |
+| Frame validate, 32 watched paths | 0.86 us | 0.00 us |
+| Repeated text append fold, 1000x | 0.85 us | 0.09 us |
 
 These are Frontier-only package measurements, not competitor comparisons.
 

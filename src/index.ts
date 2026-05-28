@@ -43,7 +43,7 @@ export type MutationPath = QueryPath;
 
 export interface MutationStateEngine {
   get(): JsonValue;
-  commitPatch(patch: Patch): unknown;
+  commitPatch(patch: Patch, options?: unknown): unknown;
 }
 
 export type MutationCrdtCommit = unknown;
@@ -399,6 +399,203 @@ export interface MutationCrdtCommitResult extends MutationCompileResult {
 export interface MutationPlanLike {
   readonly operations: readonly MutationOperation[];
   compilePatch(state: JsonValue | undefined, options?: MutationCompileOptions): MutationCompileResult;
+}
+
+export interface MutationActionStateEngine extends MutationStateEngine {}
+
+export type MutationActionStatus = 'ok' | 'error';
+
+export interface MutationActionOrigin {
+  actionId?: string;
+  causeId?: string;
+  actor?: string;
+  metadata?: JsonObject;
+  affected?: string[];
+  reads?: readonly MutationPath[];
+  writes?: readonly MutationPath[];
+}
+
+export interface MutationActionCommitOptions extends MutationActionOrigin {
+  commitOptions?: unknown;
+}
+
+export interface MutationActionDispatchOptions extends MutationActionOrigin {}
+
+export interface MutationActionSchedulerTask {
+  id?: string;
+  type?: string;
+  input?: unknown;
+  lane?: string;
+  area?: string;
+  priority?: unknown;
+  units?: number;
+  key?: string;
+  causeId?: string;
+  parentId?: string;
+  dependsOn?: readonly string[];
+  metadata?: Record<string, unknown>;
+  run(context?: unknown): unknown;
+}
+
+export interface MutationActionSchedulerLike {
+  schedule(task: MutationActionSchedulerTask): unknown;
+  run?(options?: unknown): unknown;
+  requestRun?(options?: unknown): unknown;
+}
+
+export interface MutationActionScheduleOptions extends MutationActionDispatchOptions {
+  scheduler?: MutationActionSchedulerLike;
+  taskId?: string;
+  lane?: string;
+  area?: string;
+  priority?: unknown;
+  units?: number;
+  key?: string;
+  parentId?: string;
+  dependsOn?: readonly string[];
+  autoRun?: boolean;
+  runOptions?: unknown;
+}
+
+export interface MutationActionLogger {
+  debug?(message: string, attributes?: Record<string, unknown>): void;
+  info?(message: string, attributes?: Record<string, unknown>): void;
+  error?(message: string, attributes?: Record<string, unknown>): void;
+}
+
+export interface MutationActionEventLog {
+  append(event: unknown): unknown;
+}
+
+export type MutationActionValidationResult =
+  | void
+  | boolean
+  | {
+      valid?: boolean;
+      success?: boolean;
+      issues?: unknown;
+      error?: unknown;
+      message?: string;
+    };
+
+export type MutationActionInputValidator<TInput extends JsonValue | undefined = JsonValue | undefined> =
+  | ((input: unknown) => MutationActionValidationResult)
+  | { validate(input: unknown): MutationActionValidationResult }
+  | { check(input: unknown): boolean }
+  | { parse(input: unknown): TInput }
+  | { safeParse(input: unknown): { success: boolean; data?: TInput; error?: unknown } };
+
+export interface MutationActionRegistryOptions {
+  state?: MutationActionStateEngine;
+  actor?: string;
+  logger?: MutationActionLogger;
+  eventLog?: MutationActionEventLog;
+  scheduler?: MutationActionSchedulerLike;
+  schedulerAutoRun?: boolean;
+  schedulerLane?: string;
+  schedulerPriority?: unknown;
+  onRecord?: (record: MutationActionRecord) => void;
+  now?: () => number;
+  maxHistory?: number;
+}
+
+export interface MutationActionQueryOptions {
+  where?: Record<string, JsonValue> | SelectorCondition[];
+  keyBy?: MutationPath;
+  indexBy?: MutationPath;
+  orderBy?: { path: MutationPath; direction?: SelectorOrderDirection };
+  limit?: number;
+  project?: MutationPath[];
+}
+
+export interface MutationActionQueryMatch {
+  key: ObjectKey;
+  index?: number;
+  mapKey?: string;
+  path: JsonPath;
+  value: JsonValue;
+  projection?: JsonObject;
+}
+
+export interface MutationActionContext<TInput extends JsonValue | undefined = JsonValue | undefined> {
+  readonly actionId: string;
+  readonly causeId?: string;
+  readonly actor?: string;
+  readonly input: TInput;
+  get(): JsonValue;
+  read(path: MutationPath): JsonValue | undefined;
+  query(path: MutationPath | SelectorBuilder | SelectorPlan, where?: Record<string, JsonValue> | MutationActionQueryOptions): MutationActionQueryMatch | undefined;
+  queryAll(path: MutationPath | SelectorBuilder | SelectorPlan, options?: Record<string, JsonValue> | MutationActionQueryOptions): MutationActionQueryMatch[];
+  plan(): MutationPlan;
+  commit(patch: Patch, options?: MutationActionCommitOptions): unknown;
+  commitPlan(plan: MutationPlanLike, options?: MutationCompileOptions & MutationActionCommitOptions): MutationCompileResult;
+  recordRead(path: MutationPath): void;
+  recordWrite(path: MutationPath): void;
+  affect(id: string): void;
+}
+
+export type MutationActionRunResult =
+  | void
+  | Patch
+  | MutationPlanLike
+  | MutationCompileResult;
+
+export interface MutationActionDefinition<TInput extends JsonValue | undefined = JsonValue | undefined> {
+  id: string;
+  reads?: readonly MutationPath[];
+  writes?: readonly MutationPath[];
+  affects?: readonly string[];
+  metadata?: JsonObject;
+  input?: MutationActionInputValidator<TInput>;
+  run(context: MutationActionContext<TInput>, input: TInput): MutationActionRunResult;
+}
+
+export interface MutationActionInfo {
+  id: string;
+  reads: JsonPath[];
+  writes: JsonPath[];
+  affects: string[];
+  metadata?: JsonObject;
+}
+
+export interface MutationActionRecord {
+  id: string;
+  actionId: string;
+  causeId?: string;
+  actor?: string;
+  input?: JsonValue;
+  status: MutationActionStatus;
+  startedAt: number;
+  endedAt: number;
+  durationMs: number;
+  declaredReads: JsonPath[];
+  declaredWrites: JsonPath[];
+  reads: JsonPath[];
+  writes: JsonPath[];
+  patch: Patch;
+  affected: string[];
+  metadata?: JsonObject;
+  error?: string;
+}
+
+export type MutationActionGraphEdgeKind =
+  | 'declares-read'
+  | 'declares-write'
+  | 'runtime-read'
+  | 'runtime-write'
+  | 'commits-patch'
+  | 'affects';
+
+export interface MutationActionGraphEdge {
+  from: string;
+  to: string;
+  kind: MutationActionGraphEdgeKind;
+}
+
+export interface MutationActionGraph {
+  actions: MutationActionInfo[];
+  records: MutationActionRecord[];
+  edges: MutationActionGraphEdge[];
 }
 
 export type MutationPlanScope = (plan: MutationPlan) => void;
@@ -916,6 +1113,569 @@ export function select(path: MutationPath): SelectorBuilder {
 
 export function createMutationPlan(): MutationPlan {
   return new MutationPlan();
+}
+
+export function createActionRegistry(options: MutationActionRegistryOptions = {}): MutationActionRegistry {
+  return new MutationActionRegistry(options);
+}
+
+export function inspectActionRegistry(registry: MutationActionRegistry): MutationActionGraph {
+  return registry.inspect();
+}
+
+export class MutationActionRegistry {
+  private readonly actions = new Map<string, MutationActionDefinition<JsonValue | undefined>>();
+  private readonly records: MutationActionRecord[] = [];
+  private readonly maxHistory: number;
+  private nextRecordId = 1;
+
+  constructor(private readonly options: MutationActionRegistryOptions = {}) {
+    this.maxHistory = normalizeActionHistoryLimit(options.maxHistory);
+  }
+
+  register<TInput extends JsonValue | undefined>(definition: MutationActionDefinition<TInput>): this {
+    const id = normalizeActionId(definition.id);
+    const normalized: MutationActionDefinition<JsonValue | undefined> = {
+      ...definition,
+      id,
+      reads: normalizeOptionalActionPaths(definition.reads, 'action reads'),
+      writes: normalizeOptionalActionPaths(definition.writes, 'action writes'),
+      affects: normalizeActionAffects(definition.affects),
+      metadata: definition.metadata === undefined ? undefined : cloneJson(definition.metadata) as JsonObject,
+      run: definition.run as MutationActionDefinition<JsonValue | undefined>['run']
+    };
+    this.actions.set(id, normalized);
+    return this;
+  }
+
+  unregister(id: string): boolean {
+    return this.actions.delete(normalizeActionId(id));
+  }
+
+  has(id: string): boolean {
+    return this.actions.has(normalizeActionId(id));
+  }
+
+  get(id: string): MutationActionInfo {
+    const action = this.actions.get(normalizeActionId(id));
+    if (!action) throw new TypeError('unknown mutation action: ' + id);
+    return cloneActionInfo(action);
+  }
+
+  list(): MutationActionInfo[] {
+    return Array.from(this.actions.values(), cloneActionInfo);
+  }
+
+  history(): MutationActionRecord[] {
+    return this.records.map(cloneActionRecord);
+  }
+
+  dispatch<TInput extends JsonValue | undefined = JsonValue | undefined>(
+    id: string,
+    input?: TInput,
+    options: MutationActionDispatchOptions = {}
+  ): { record: MutationActionRecord; value: unknown } {
+    const actionId = normalizeActionId(id);
+    const action = this.actions.get(actionId);
+    if (!action) throw new TypeError('unknown mutation action: ' + actionId);
+    const record = this.createRecord(actionId, input, action, options);
+    let value: unknown;
+    try {
+      const actionInput = validateMutationActionInput(action.input, input, actionId) as TInput;
+      record.input = actionInput === undefined ? undefined : cloneJson(actionInput);
+      const context = this.createContext(record, actionInput);
+      value = action.run(context, actionInput);
+      if (isPromiseLike(value)) throw new TypeError('async mutation actions are not supported by dispatch(); call async work before dispatching');
+      this.applyActionReturn(value as MutationActionRunResult, context);
+      this.finishRecord(record, 'ok');
+      return { record: cloneActionRecord(record), value };
+    } catch (error) {
+      this.finishRecord(record, 'error', error);
+      throw error;
+    }
+  }
+
+  schedule<TInput extends JsonValue | undefined = JsonValue | undefined>(
+    id: string,
+    input?: TInput,
+    options: MutationActionScheduleOptions = {}
+  ): unknown {
+    const actionId = normalizeActionId(id);
+    if (!this.actions.has(actionId)) throw new TypeError('unknown mutation action: ' + actionId);
+    const scheduler = options.scheduler ?? this.options.scheduler;
+    if (!scheduler) throw new TypeError('mutation action registry requires a scheduler for schedule()');
+    const taskId = options.taskId ?? 'mutation-action:' + actionId + ':' + this.nextRecordId;
+    const scheduled = scheduler.schedule({
+      id: taskId,
+      type: 'frontier.mutation.action',
+      input: input === undefined ? undefined : cloneJson(input),
+      lane: options.lane ?? this.options.schedulerLane ?? 'action',
+      area: options.area ?? 'mutation',
+      priority: options.priority ?? this.options.schedulerPriority ?? 'normal',
+      units: options.units ?? 1,
+      key: options.key ?? 'action:' + actionId,
+      causeId: options.causeId,
+      parentId: options.parentId,
+      dependsOn: options.dependsOn,
+      metadata: mergeActionMetadata({ actionId, scheduled: true }, options.metadata) as Record<string, unknown>,
+      run: () => this.dispatch(actionId, input, {
+        causeId: options.causeId ?? taskId,
+        actor: options.actor,
+        affected: options.affected,
+        metadata: mergeActionMetadata(options.metadata, { scheduled: true, schedulerTaskId: taskId })
+      })
+    });
+    const autoRun = options.autoRun ?? this.options.schedulerAutoRun ?? false;
+    if (autoRun) {
+      if (typeof scheduler.requestRun === 'function') scheduler.requestRun(options.runOptions);
+      else if (typeof scheduler.run === 'function') scheduler.run(options.runOptions);
+    }
+    return scheduled;
+  }
+
+  commitPatch(patch: Patch, options: MutationActionCommitOptions = {}): MutationActionRecord {
+    const actionId = normalizeActionId(options.actionId ?? 'patch.commit');
+    const record = this.createRecord(actionId, undefined, undefined, options);
+    const context = this.createContext(record, undefined);
+    try {
+      context.commit(patch, options);
+      this.finishRecord(record, 'ok');
+      return cloneActionRecord(record);
+    } catch (error) {
+      this.finishRecord(record, 'error', error);
+      throw error;
+    }
+  }
+
+  inspect(): MutationActionGraph {
+    const actions = this.list();
+    const records = this.history();
+    const edges: MutationActionGraphEdge[] = [];
+    for (const action of actions) {
+      const from = 'action:' + action.id;
+      for (const path of action.reads) edges[edges.length] = { from, to: 'path:' + actionPathKey(path), kind: 'declares-read' };
+      for (const path of action.writes) edges[edges.length] = { from, to: 'path:' + actionPathKey(path), kind: 'declares-write' };
+      for (const affected of action.affects) edges[edges.length] = { from, to: 'node:' + affected, kind: 'affects' };
+    }
+    for (const record of records) {
+      const from = 'record:' + record.id;
+      edges[edges.length] = { from: 'action:' + record.actionId, to: from, kind: 'commits-patch' };
+      for (const path of record.reads) edges[edges.length] = { from, to: 'path:' + actionPathKey(path), kind: 'runtime-read' };
+      for (const path of record.writes) edges[edges.length] = { from, to: 'path:' + actionPathKey(path), kind: 'runtime-write' };
+      for (const affected of record.affected) edges[edges.length] = { from, to: 'node:' + affected, kind: 'affects' };
+    }
+    return { actions, records, edges };
+  }
+
+  private createRecord(
+    actionId: string,
+    input: JsonValue | undefined,
+    action: MutationActionDefinition<JsonValue | undefined> | undefined,
+    options: MutationActionOrigin
+  ): MutationActionRecord {
+    const startedAt = this.now();
+    const declaredReads = action?.reads ? clonePathArray(action.reads as JsonPath[]) : [];
+    const declaredWrites = action?.writes ? clonePathArray(action.writes as JsonPath[]) : [];
+    const originReads = (options.reads ?? []).map((path) => normalizePath(path, 'action origin read'));
+    const originWrites = (options.writes ?? []).map((path) => normalizePath(path, 'action origin write'));
+    const affected = new Set<string>(action?.affects ? action.affects.slice() : []);
+    for (const item of options.affected ?? []) affected.add(String(item));
+    const metadata = mergeActionMetadata(action?.metadata, options.metadata);
+    const record: MutationActionRecord = {
+      id: 'act-' + this.nextRecordId++,
+      actionId,
+      causeId: options.causeId,
+      actor: options.actor ?? this.options.actor,
+      input: input === undefined ? undefined : cloneJson(input),
+      status: 'ok',
+      startedAt,
+      endedAt: startedAt,
+      durationMs: 0,
+      declaredReads,
+      declaredWrites,
+      reads: clonePathArray(declaredReads),
+      writes: clonePathArray(declaredWrites),
+      patch: [],
+      affected: Array.from(affected)
+    };
+    for (const path of originReads) pushUniquePath(record.reads, path);
+    for (const path of originWrites) pushUniquePath(record.writes, path);
+    if (metadata !== undefined) record.metadata = metadata;
+    return record;
+  }
+
+  private createContext<TInput extends JsonValue | undefined>(
+    record: MutationActionRecord,
+    input: TInput
+  ): MutationActionContext<TInput> {
+    const registry = this;
+    return {
+      actionId: record.actionId,
+      causeId: record.causeId,
+      actor: record.actor,
+      input,
+      get() {
+        return registry.requireState().get();
+      },
+      read(path) {
+        const normalized = normalizePath(path, 'action read path');
+        pushUniquePath(record.reads, normalized);
+        return readPath(registry.requireState().get(), normalized);
+      },
+      query(path, where) {
+        return this.queryAll(path, where)[0];
+      },
+      queryAll(path, options) {
+        const selector = normalizeActionQuerySelector(path, options);
+        pushUniquePath(record.reads, selector.path);
+        const source = registry.requireState().get();
+        const runtime = createMutationRuntime(normalizeMutationSchema(undefined));
+        const context = resolveSelector(source, selector, runtime);
+        return context.matches.map((match) => makeActionQueryMatch(match, context.selector));
+      },
+      plan() {
+        return createMutationPlan();
+      },
+      commit(patch, commitOptions = {}) {
+        const clonedPatch = clonePatch(patch);
+        appendPatch(record.patch, clonedPatch);
+        for (const path of collectPatchWritePaths(clonedPatch)) pushUniquePath(record.writes, path);
+        for (const item of commitOptions.affected ?? []) pushUniqueString(record.affected, String(item));
+        const metadata = mergeActionMetadata(record.metadata, commitOptions.metadata);
+        if (metadata !== undefined) record.metadata = metadata;
+        return registry.requireState().commitPatch(clonedPatch, {
+          origin: commitOptions.actionId ?? record.actionId,
+          causeId: commitOptions.causeId ?? record.causeId,
+          actor: commitOptions.actor ?? record.actor,
+          metadata: record.metadata,
+          ...(isObjectRecord(commitOptions.commitOptions) ? commitOptions.commitOptions : {})
+        });
+      },
+      commitPlan(plan, options = {}) {
+        const result = compileMutationPlan(plan, registry.requireState().get(), options);
+        this.commit(result.patch, options);
+        return result;
+      },
+      recordRead(path) {
+        pushUniquePath(record.reads, normalizePath(path, 'action read path'));
+      },
+      recordWrite(path) {
+        pushUniquePath(record.writes, normalizePath(path, 'action write path'));
+      },
+      affect(id) {
+        pushUniqueString(record.affected, String(id));
+      }
+    };
+  }
+
+  private applyActionReturn(value: MutationActionRunResult, context: MutationActionContext): void {
+    if (value === undefined) return;
+    if (isPatch(value)) {
+      context.commit(value);
+      return;
+    }
+    if (isMutationCompileResult(value)) {
+      context.commit(value.patch);
+      return;
+    }
+    if (isMutationPlanLike(value)) {
+      context.commitPlan(value);
+      return;
+    }
+    throw new TypeError('unsupported mutation action return value');
+  }
+
+  private finishRecord(record: MutationActionRecord, status: MutationActionStatus, error?: unknown): void {
+    const endedAt = this.now();
+    record.status = status;
+    record.endedAt = endedAt;
+    record.durationMs = Math.max(0, endedAt - record.startedAt);
+    if (error !== undefined) record.error = error instanceof Error ? error.message : String(error);
+    this.records.push(cloneActionRecord(record));
+    if (this.records.length > this.maxHistory) this.records.splice(0, this.records.length - this.maxHistory);
+    emitActionRecord(record, this.options);
+  }
+
+  private requireState(): MutationActionStateEngine {
+    if (!this.options.state) throw new TypeError('mutation action registry requires a state engine for this operation');
+    return this.options.state;
+  }
+
+  private now(): number {
+    return this.options.now ? this.options.now() : Date.now();
+  }
+}
+
+function normalizeActionId(id: string): string {
+  if (typeof id !== 'string' || id.length === 0) throw new TypeError('mutation action id must be a non-empty string');
+  return id;
+}
+
+function normalizeActionHistoryLimit(value: number | undefined): number {
+  if (value === undefined) return 1024;
+  if (!Number.isSafeInteger(value) || value < 0) throw new RangeError('mutation action maxHistory must be a non-negative safe integer');
+  return value;
+}
+
+function normalizeOptionalActionPaths(paths: readonly MutationPath[] | undefined, label: string): JsonPath[] | undefined {
+  if (paths === undefined) return undefined;
+  const out = new Array<JsonPath>(paths.length);
+  for (let i = 0; i < paths.length; i++) out[i] = normalizePath(paths[i], label);
+  return out;
+}
+
+function normalizeActionAffects(affects: readonly string[] | undefined): string[] | undefined {
+  if (affects === undefined) return undefined;
+  const out: string[] = [];
+  for (const item of affects) pushUniqueString(out, String(item));
+  return out;
+}
+
+function validateMutationActionInput<TInput extends JsonValue | undefined>(
+  validator: MutationActionInputValidator<TInput> | undefined,
+  input: unknown,
+  actionId: string
+): TInput | undefined {
+  if (validator === undefined) return input as TInput | undefined;
+  if (typeof validator === 'function') {
+    assertMutationActionValidationResult(validator(input), actionId);
+    return input as TInput | undefined;
+  }
+  if (validator === null || typeof validator !== 'object') {
+    throw new TypeError('mutation action input validator must be a function or schema-like object');
+  }
+  if ('safeParse' in validator && typeof validator.safeParse === 'function') {
+    const result = validator.safeParse(input);
+    if (!result || result.success !== true) {
+      throw new TypeError('mutation action input failed validation for ' + actionId + formatMutationActionValidationReason(result?.error));
+    }
+    return result.data;
+  }
+  if ('parse' in validator && typeof validator.parse === 'function') {
+    return validator.parse(input);
+  }
+  if ('validate' in validator && typeof validator.validate === 'function') {
+    assertMutationActionValidationResult(validator.validate(input), actionId);
+    return input as TInput | undefined;
+  }
+  if ('check' in validator && typeof validator.check === 'function') {
+    if (!validator.check(input)) throw new TypeError('mutation action input failed validation for ' + actionId);
+    return input as TInput | undefined;
+  }
+  throw new TypeError('mutation action input validator must expose validate(), check(), parse(), or safeParse()');
+}
+
+function assertMutationActionValidationResult(result: MutationActionValidationResult, actionId: string): void {
+  if (result === undefined || result === true) return;
+  if (result === false) throw new TypeError('mutation action input failed validation for ' + actionId);
+  if (result !== null && typeof result === 'object') {
+    if ('valid' in result) {
+      if (result.valid === false) {
+        throw new TypeError('mutation action input failed validation for ' + actionId + formatMutationActionValidationReason(result.issues ?? result.error ?? result.message));
+      }
+      return;
+    }
+    if ('success' in result) {
+      if (result.success === false) {
+        throw new TypeError('mutation action input failed validation for ' + actionId + formatMutationActionValidationReason(result.error ?? result.issues ?? result.message));
+      }
+      return;
+    }
+  }
+  throw new TypeError('mutation action input failed validation for ' + actionId + formatMutationActionValidationReason(result));
+}
+
+function formatMutationActionValidationReason(reason: unknown): string {
+  if (reason === undefined || reason === null) return '';
+  if (typeof reason === 'string') return ': ' + reason;
+  if (reason instanceof Error) return ': ' + reason.message;
+  try {
+    return ': ' + JSON.stringify(reason);
+  } catch {
+    return ': ' + String(reason);
+  }
+}
+
+function cloneActionInfo(action: MutationActionDefinition<JsonValue | undefined>): MutationActionInfo {
+  const info: MutationActionInfo = {
+    id: action.id,
+    reads: clonePathArray((action.reads ?? []) as JsonPath[]),
+    writes: clonePathArray((action.writes ?? []) as JsonPath[]),
+    affects: (action.affects ?? []).slice()
+  };
+  if (action.metadata !== undefined) info.metadata = cloneJson(action.metadata) as JsonObject;
+  return info;
+}
+
+function cloneActionRecord(record: MutationActionRecord): MutationActionRecord {
+  const out: MutationActionRecord = {
+    id: record.id,
+    actionId: record.actionId,
+    causeId: record.causeId,
+    actor: record.actor,
+    input: record.input === undefined ? undefined : cloneJson(record.input),
+    status: record.status,
+    startedAt: record.startedAt,
+    endedAt: record.endedAt,
+    durationMs: record.durationMs,
+    declaredReads: clonePathArray(record.declaredReads),
+    declaredWrites: clonePathArray(record.declaredWrites),
+    reads: clonePathArray(record.reads),
+    writes: clonePathArray(record.writes),
+    patch: clonePatch(record.patch),
+    affected: record.affected.slice(),
+    error: record.error
+  };
+  if (record.metadata !== undefined) out.metadata = cloneJson(record.metadata) as JsonObject;
+  return out;
+}
+
+function clonePathArray(paths: readonly JsonPath[]): JsonPath[] {
+  return paths.map((path) => path.slice());
+}
+
+function clonePatch(patch: Patch): Patch {
+  return cloneJson(patch) as Patch;
+}
+
+function appendPatch(target: Patch, patch: Patch): void {
+  for (let i = 0; i < patch.length; i++) target[target.length] = cloneJson(patch[i]) as PatchOperation;
+}
+
+function pushUniquePath(target: JsonPath[], path: JsonPath): void {
+  for (let i = 0; i < target.length; i++) {
+    if (samePath(target[i], path)) return;
+  }
+  target[target.length] = path.slice();
+}
+
+function pushUniqueString(target: string[], value: string): void {
+  if (!target.includes(value)) target[target.length] = value;
+}
+
+function mergeActionMetadata(
+  left: JsonObject | undefined,
+  right: JsonObject | undefined
+): JsonObject | undefined {
+  if (left === undefined && right === undefined) return undefined;
+  return {
+    ...(left === undefined ? {} : cloneJson(left) as JsonObject),
+    ...(right === undefined ? {} : cloneJson(right) as JsonObject)
+  };
+}
+
+function collectPatchWritePaths(patch: Patch): JsonPath[] {
+  const paths: JsonPath[] = [];
+  for (const op of patch) {
+    if (!Array.isArray(op[1])) continue;
+    if (op[0] === OP_ARRAY_OBJECT_FIELD_ASSIGN) {
+      const base = op[1] as JsonPath;
+      const indexes = op[2] as number[];
+      const fields = op[3] as JsonPath[];
+      for (const index of indexes) {
+        for (const field of fields) pushUniquePath(paths, base.concat(index, field));
+      }
+      continue;
+    }
+    pushUniquePath(paths, op[1] as JsonPath);
+  }
+  return paths;
+}
+
+function normalizeActionQuerySelector(
+  path: MutationPath | SelectorBuilder | SelectorPlan,
+  input: Record<string, JsonValue> | MutationActionQueryOptions | undefined
+): SelectorPlan {
+  if (path instanceof SelectorBuilder) return path.toPlan();
+  if (isSelectorPlan(path)) return cloneSelectorPlan(path);
+  const options = normalizeActionQueryOptions(input);
+  const builder = new SelectorBuilder(path);
+  const where = options.where;
+  if (Array.isArray(where)) {
+    for (const condition of where) builder.where(condition);
+  } else if (where !== undefined) {
+    for (const key of Object.keys(where)) builder.where(key, '==', where[key]);
+  }
+  if (options.keyBy !== undefined) builder.keyBy(options.keyBy);
+  if (options.indexBy !== undefined) builder.indexBy(options.indexBy);
+  if (options.orderBy !== undefined) builder.orderBy(options.orderBy.path, options.orderBy.direction ?? 'asc');
+  if (options.limit !== undefined) builder.limit(options.limit);
+  if (options.project !== undefined) builder.project(...options.project);
+  return builder.toPlan();
+}
+
+function normalizeActionQueryOptions(
+  input: Record<string, JsonValue> | MutationActionQueryOptions | undefined
+): MutationActionQueryOptions {
+  if (input === undefined) return {};
+  if (
+    'where' in input ||
+    'keyBy' in input ||
+    'indexBy' in input ||
+    'orderBy' in input ||
+    'limit' in input ||
+    'project' in input
+  ) {
+    return input as MutationActionQueryOptions;
+  }
+  return { where: input as Record<string, JsonValue> };
+}
+
+function makeActionQueryMatch(match: RowMatch, selector: SelectorPlan): MutationActionQueryMatch {
+  const out: MutationActionQueryMatch = {
+    key: match.key,
+    path: match.path.slice(),
+    value: cloneJson(match.value)
+  };
+  if (match.rowIndex !== undefined) out.index = match.rowIndex;
+  if (match.mapKey !== undefined) out.mapKey = match.mapKey;
+  const projected = makeSelectorMatchOut(match, selector).projection;
+  if (projected !== undefined) out.projection = projected;
+  return out;
+}
+
+function isSelectorPlan(value: unknown): value is SelectorPlan {
+  return value !== null &&
+    typeof value === 'object' &&
+    Array.isArray((value as SelectorPlan).path) &&
+    Array.isArray((value as SelectorPlan).conditions);
+}
+
+function isPatch(value: unknown): value is Patch {
+  return Array.isArray(value) && value.every((op) => Array.isArray(op) && typeof op[0] === 'number');
+}
+
+function isMutationCompileResult(value: unknown): value is MutationCompileResult {
+  return value !== null && typeof value === 'object' && isPatch((value as MutationCompileResult).patch);
+}
+
+function isMutationPlanLike(value: unknown): value is MutationPlanLike {
+  return value !== null &&
+    typeof value === 'object' &&
+    Array.isArray((value as MutationPlanLike).operations) &&
+    typeof (value as MutationPlanLike).compilePatch === 'function';
+}
+
+function isPromiseLike(value: unknown): value is Promise<unknown> {
+  return value !== null && typeof value === 'object' && typeof (value as Promise<unknown>).then === 'function';
+}
+
+function emitActionRecord(record: MutationActionRecord, options: MutationActionRegistryOptions): void {
+  const cloned = cloneActionRecord(record);
+  try {
+    options.onRecord?.(cloned);
+  } catch {}
+  try {
+    if (record.status === 'error') options.logger?.error?.('frontier.mutation.action', cloned as unknown as Record<string, unknown>);
+    else options.logger?.info?.('frontier.mutation.action', cloned as unknown as Record<string, unknown>);
+  } catch {}
+  try {
+    options.eventLog?.append({ type: 'frontier.mutation.action', record: cloned });
+  } catch {}
+}
+
+function actionPathKey(path: JsonPath): string {
+  return pathCacheKey(path);
 }
 
 export function getMutationPlanAccess(plan: MutationPlanLike): MutationPlanAccess {

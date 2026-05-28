@@ -4,6 +4,7 @@ import {
   canBatchMutationPlans,
   compileMutationPlan,
   captureMutationFrame,
+  createActionRegistry,
   createMutationPlan,
   createSelectorRegistry,
   evaluateMutationFrame,
@@ -152,6 +153,143 @@ assert.deepStrictEqual(next, {
 
   const writeFrame = captureMutationFrame(authoredState, { plan: framedPlan, includeWrites: true });
   assert.strictEqual(evaluateMutationFrame({ ...authoredState, title: 'changed' }, writeFrame).ok, false);
+}
+
+{
+  const actionState = {
+    todos: [
+      { id: 'a', text: 'Alpha', done: false },
+      { id: 'b', text: 'Beta', done: true }
+    ],
+    audit: []
+  };
+  const engine = {
+    get() {
+      return actionState;
+    },
+    commitPatch(patch) {
+      const next = applyPatchImmutable(actionState, patch);
+      Object.keys(actionState).forEach((key) => delete actionState[key]);
+      Object.assign(actionState, next);
+    }
+  };
+  const logRecords = [];
+  const events = [];
+  const actions = createActionRegistry({
+    state: engine,
+    actor: 'local-user',
+    logger: {
+      info: (_message, record) => logRecords.push(record),
+      error: (_message, record) => logRecords.push(record)
+    },
+    eventLog: { append: (event) => events.push(event) },
+    now: (() => {
+      let now = 1000;
+      return () => now++;
+    })()
+  });
+  actions.register({
+    id: 'todo.toggle',
+    input(value) {
+      return {
+        valid: value !== null && typeof value === 'object' && typeof value.id === 'string',
+        issues: [{ path: '/id', message: 'id must be a string' }]
+      };
+    },
+    reads: ['/todos/*/done'],
+    writes: ['/todos/*/done'],
+    affects: ['dom.binding:todo-row'],
+    metadata: { feature: 'todos' },
+    run(ctx, input) {
+      const todo = ctx.query('/todos/*', { id: input.id });
+      assert.ok(todo);
+      ctx.commit([[0, ['todos', todo.index, 'done'], !todo.value.done]], {
+        causeId: 'test:toggle',
+        affected: ['view:openTodos']
+      });
+    }
+  });
+  actions.register({
+    id: 'audit.add',
+    input: {
+      safeParse(value) {
+        if (value !== null && typeof value === 'object' && typeof value.message === 'string') {
+          return { success: true, data: { message: value.message } };
+        }
+        return { success: false, error: 'message must be a string' };
+      }
+    },
+    writes: ['/audit'],
+    run(ctx, input) {
+      return ctx.plan().append('/audit', input.message);
+    }
+  });
+
+  const dispatched = actions.dispatch('todo.toggle', { id: 'a' }, {
+    causeId: 'click:todo-a',
+    reads: ['/todos/0/id'],
+    affected: ['dom.binding:todo-toggle']
+  });
+  assert.strictEqual(actionState.todos[0].done, true);
+  assert.strictEqual(dispatched.record.actionId, 'todo.toggle');
+  assert.strictEqual(dispatched.record.actor, 'local-user');
+  assert.ok(dispatched.record.reads.some((path) => path.join('/') === 'todos/*/done'));
+  assert.ok(dispatched.record.reads.some((path) => path.join('/') === 'todos/*'));
+  assert.ok(dispatched.record.writes.some((path) => path.join('/') === 'todos/0/done'));
+  assert.ok(dispatched.record.reads.some((path) => path.join('/') === 'todos/0/id'));
+  assert.deepStrictEqual(dispatched.record.affected, ['dom.binding:todo-row', 'dom.binding:todo-toggle', 'view:openTodos']);
+
+  assert.throws(
+    () => actions.dispatch('todo.toggle', { id: 1 }),
+    /mutation action input failed validation for todo\.toggle/
+  );
+  const failed = actions.history().at(-1);
+  assert.strictEqual(failed.actionId, 'todo.toggle');
+  assert.strictEqual(failed.status, 'error');
+  assert.strictEqual(failed.patch.length, 0);
+
+  actions.dispatch('audit.add', { message: 'toggled a' });
+  assert.deepStrictEqual(actionState.audit, ['toggled a']);
+
+  const scheduledTasks = [];
+  const fakeScheduler = {
+    schedule(task) {
+      scheduledTasks.push(task);
+      return task;
+    },
+    run() {
+      while (scheduledTasks.length !== 0) scheduledTasks.shift().run();
+    }
+  };
+  const scheduled = actions.schedule('audit.add', { message: 'queued action' }, {
+    scheduler: fakeScheduler,
+    autoRun: true,
+    causeId: 'timer:audit',
+    key: 'audit:add'
+  });
+  assert.strictEqual(scheduled.type, 'frontier.mutation.action');
+  assert.strictEqual(scheduled.key, 'audit:add');
+  assert.deepStrictEqual(actionState.audit, ['toggled a', 'queued action']);
+  assert.strictEqual(actions.history().at(-1).metadata.scheduled, true);
+
+  const direct = actions.commitPatch([[0, ['todos', 1, 'done'], false]], {
+    actionId: 'external.patch',
+    causeId: 'class:TodoService',
+    reads: ['/todos/1/id'],
+    affected: ['dom.binding:todo-row-b']
+  });
+  assert.strictEqual(actionState.todos[1].done, false);
+  assert.strictEqual(direct.actionId, 'external.patch');
+  assert.ok(direct.reads.some((path) => path.join('/') === 'todos/1/id'));
+  assert.ok(direct.writes.some((path) => path.join('/') === 'todos/1/done'));
+
+  const graph = actions.inspect();
+  assert.ok(graph.actions.some((action) => action.id === 'todo.toggle'));
+  assert.ok(graph.records.length >= 4);
+  assert.ok(graph.edges.some((edge) => edge.kind === 'declares-write' && edge.from === 'action:todo.toggle'));
+  assert.ok(graph.edges.some((edge) => edge.kind === 'runtime-write' && edge.to === 'path:["todos",0,"done"]'));
+  assert.strictEqual(logRecords.length, 5);
+  assert.strictEqual(events.length, 5);
 }
 
 console.log('frontier mutation smoke passed');

@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { applyPatchImmutable } from '@shapeshift-labs/frontier';
 import {
   captureMutationFrame,
+  createActionRegistry,
   createMutationPlan,
   evaluateMutationFrame,
   select
@@ -26,6 +27,7 @@ const rows = [
   runDirectFixture(makeRepeatedArithmeticFixture()),
   runDirectFixture(makeTransactionDeferredDeleteFixture()),
   runFrameFixture(makeFrameEvaluationFixture()),
+  runActionFixture(makeActionDispatchFixture()),
   runDirectFixture(makeRepeatedTextFixture())
 ];
 
@@ -118,6 +120,28 @@ function runFrameFixture(fixture) {
     strategy: 'frame',
     patchOps: 0,
     jsonPatchBytes: Buffer.byteLength(JSON.stringify(fixture.frame)),
+    compileMedianUs: round(timing.median),
+    compileP95Us: round(timing.p95),
+    applyMedianUs: 0,
+    applyP95Us: 0
+  };
+}
+
+function runActionFixture(fixture) {
+  const first = fixture.dispatch();
+  assert.strictEqual(first.record.status, 'ok');
+  assert.ok(first.record.patch.length > 0);
+  const timing = measure(() => {
+    const result = fixture.dispatch();
+    sink += result.record.patch.length + result.record.writes.length;
+  }, fixture.inner || 5000);
+  const latest = fixture.registry.history().at(-1);
+  return {
+    fixture: fixture.name,
+    matches: latest?.reads.length ?? 0,
+    strategy: 'action',
+    patchOps: latest?.patch.length ?? 0,
+    jsonPatchBytes: Buffer.byteLength(JSON.stringify(latest ?? {})),
     compileMedianUs: round(timing.median),
     compileP95Us: round(timing.p95),
     applyMedianUs: 0,
@@ -229,6 +253,37 @@ function makeFrameEvaluationFixture() {
     frame,
     options: { version: 'bench-v1' },
     inner: 10000
+  };
+}
+
+function makeActionDispatchFixture() {
+  let state = { rows: makeRows(1000).map((row) => ({ ...row, done: false })) };
+  const engine = {
+    get() {
+      return state;
+    },
+    commitPatch(patch) {
+      state = applyPatchImmutable(state, patch);
+    }
+  };
+  const registry = createActionRegistry({ state: engine, actor: 'bench', maxHistory: 64 });
+  registry.register({
+    id: 'row.toggle',
+    reads: ['/rows/*/done'],
+    writes: ['/rows/*/done'],
+    run(ctx, input) {
+      const row = ctx.query('/rows/*', { id: input.id });
+      if (!row) return;
+      ctx.commit([[0, ['rows', row.index, 'done'], !row.value.done]]);
+    }
+  });
+  return {
+    name: 'Action dispatch, query + patch commit',
+    registry,
+    dispatch() {
+      return registry.dispatch('row.toggle', { id: 'row-500' });
+    },
+    inner: 3000
   };
 }
 
